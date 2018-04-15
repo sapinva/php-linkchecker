@@ -4,12 +4,6 @@
 
 FIXME:
 
-- CRITICAL: find cause of high cpu (99%) and load average (1.00+) 
-  - get rid of in_array() calls...
-    10,000 in the test below...
-      isset:    0.009623
-      in_array: 1.738441
-
 - add option to produce json list of bad links, for use in apps (in-page link check highlighting)
 
     "http://xyz.com/some/page": {
@@ -19,6 +13,7 @@ FIXME:
         "http://abc.com/doc": "warn...",
     }
 
+- add $this->results[earl][message] for curl errors
 - youtube quits responding after X checks
   - per host delay setting?
   - maybe robots.txt has max rate?
@@ -32,33 +27,32 @@ FIXME:
 - use curl to feed dom object, so it is subject to same headers, timeout, etc.
 - cache last used hostnames, and only apply delay for same host (speed up)
 - build_earl() needs a rewrite
-- re-enable max $depth fail safe, this time using path parts count
+- re-enable max $depth fail safe
+  - this time using path parts count
+  - also needed for limiting crawl to sub dir of site
 
 */
 
 class LinkChecker
 {
 // FIXME: move these to constructor...
-private $depth = 8; // FIXME: no longer does anything
 private $url;
-private $results = array();
 //private $same_host = false;
 private $host;
 
-public function setDepth($depth) { $this->depth = $depth; }
 public function setHost($host) { $this->host = $host; }
-public function getResults() { return $this->results; }
 //public function setSameHost($same_host) { $this->same_host = $same_host; }
 
-    //public function __construct($url = null, $depth = null, $same_host = false)
-    public function __construct($url = null, $depth = null)
+    public function __construct($url = null)
     {
-    $this->bugger = false;
-    //$this->bugger_stop = -1; // no stop
-    // $this->bugger_stop = 3; // stop at $this->bugger_stop pages
+    $this->bugger = true;
+    // $this->bugger_stop = -1; // no stop
+    $this->bugger_stop = 3; // stop at $this->bugger_stop pages
 
     $this->curl_timeout = 30;
-    $this->delay = 3;
+    $this->delay = 2;
+    $this->crawl_queue = array ();
+    $this->results = array ();
     $this->site_map = array ();
     $this->redirects = array ();
     $this->seen_hashes = array ();
@@ -73,21 +67,110 @@ public function getResults() { return $this->results; }
         'bad_links' => 0,
         // FIXME: more stats...
     );
-    $this->seen_earls = array (); // FIXME: in_array(x, (statis) $seen) replacement
-    $this->translated_site_map = array (); // FIXME: page => {href => earl} map
 
-    // FIXME: config file for ignore urls, etc.
     if (! $this->str_starts_with($url, 'http') && file_exists ($url)) $this->parse_config($url);
     else if (! empty ($url)) $this->set_earl($url);
 
-
-    // FIXME: use getopt() or maybe take $ARGV[1] as the required config?
-    //        --html      print html report
-    //        --config    config file for ignore urls, etc.
-
-
-    if (isset ($depth) && ! is_null ($depth)) $this->setDepth($depth);
     //$this->setSameHost($same_host);
+    }
+
+    /**************
+    *             *
+    *   crawl()   *
+    *             *
+    **************/
+    public function crawl ()
+    {
+        if (empty ($this->url)) 
+        {
+        throw new \Exception('URL must be set');
+        }
+
+    $this->earl_scheme = $this->str_starts_with($this->url, 'https:') ? 'https' : 'http';
+    $this->_crawl($this->url);
+    $this->mk_site_map();
+
+    return $this->results;
+    }
+
+    /***************
+    *              *
+    *   _crawl()   *
+    *              *
+    ***************/
+    private function _crawl ($url)
+    {
+    $this->bugger_add('_crawl', $url); // bugger
+    sleep ($this->delay); // be friendly :)
+
+    if (empty ($url)) return;
+
+        if (isset ($this->results[$url])) // FIXME: this case should never happen.............
+        {
+        $this->bugger_add(' isset ($this->results[$url]) RETURN', $url); // bugger
+        if ($this->page_pointer != 0 && ! isset ($this->site_map[$this->page_pointer][$url])) 
+            $this->site_map[$this->page_pointer][$url] = $this->results[$url]['status'];
+        return;
+        }
+
+    $hinfo = $this->get_head($url);
+    if ($hinfo['status'] == 500) $hinfo = $this->get_head($url, true); // some servers don't like HEAD
+    if ($hinfo['redirect']) $this->redirects[$url] = $hinfo['redirect'];
+
+    $this->results[$url] = array (
+        'status' => $hinfo['status'],
+    );
+    if ($this->page_pointer != 0 && ! isset ($this->site_map[$this->page_pointer][$url])) 
+        $this->site_map[$this->page_pointer][$url] = $this->results[$url]['status'];
+
+        
+
+        if ($this->is_type_html($hinfo['content_type']) && $this->is_same_host($url) && $hinfo['status'] == 200) 
+        {
+        if ($this->bugger_stop == 0) return; // stop N pages, for testing only
+        $this->bugger_stop--;
+
+        $this->bugger_add(' get dom', $url); // bugger
+
+        if (! isset ($this->site_map[$url])) $this->site_map[$url] = array ();
+        $this->page_pointer = $url;
+        $this->bugger_add('  page_pointer', $this->page_pointer); // bugger
+
+        $dom = new \DOMDocument('1.0');
+        @$dom->loadHTMLFile($url);
+
+        $sig = md5 ($dom->saveHTML());
+        if (! isset ($this->seen_hashes[$sig])) $this->seen_hashes[$sig] = $url;
+        else return $this->is_alias($sig, $url);
+
+        $anchors = $dom->getElementsByTagName('a');
+
+            foreach ($anchors as $element)
+            {
+            $a_href = $element->getAttribute('href');
+            $this->bugger_add('  each $a_href', $a_href); // bugger
+            $href = $this->build_earl($url, $a_href);
+            $this->bugger_add('   build_earl() $href', $href); // bugger
+
+            if (! $href) continue;
+            if ($this->is_ignore($href)) continue;
+
+            if ($this->is_translate($href)) $href = $this->translate_urls[$href];
+
+            $this->bugger_add('    add to site_map $href', $href); // bugger
+            $this->site_map[$this->page_pointer][$href] = false;
+            
+            if (! isset ($this->results[$href])) $this->crawl_queue[] = $href;
+            }
+                                
+            while (count ($this->crawl_queue) > 0)
+            {
+            $target = array_shift ($this->crawl_queue);
+            if (! isset ($this->results[$target])) $this->_crawl($target);
+            }
+        }
+
+    return $url;
     }
 
     /*********************
@@ -160,25 +243,6 @@ public function getResults() { return $this->results; }
     $this->setHost($this->get_host($url));
     }
 
-    /**************
-    *             *
-    *   crawl()   *
-    *             *
-    **************/
-    public function crawl ()
-    {
-        if (empty ($this->url)) 
-        {
-        throw new \Exception('URL must be set');
-        }
-
-    $this->earl_scheme = $this->str_starts_with($this->url, 'https:') ? 'https' : 'http';
-    $this->_crawl($this->url, $this->depth);
-    $this->mk_site_map();
-
-    return $this->results;
-    }
-
     /********************
     *                   *
     *   mk_site_map()   *
@@ -224,96 +288,6 @@ public function getResults() { return $this->results; }
     if ($translate) $this->bugger_add('*** is_translate ***', $earl); // bugger
 
     return $translate;
-    }
-
-    /***************
-    *              *
-    *   _crawl()   *
-    *              *
-    ***************/
-    private function _crawl ($url, $depth)
-    {
-    static $seen = array (); // FIXME: in_array() slow!
-
-    $this->bugger_add('_crawl', $url); // bugger
-    sleep ($this->delay); // be friendly :)
-    //$this->bugger_add('$seen', $seen); // bugger
-
-    if (empty ($url)) return;
-
-    // FIXME: this already gets checked in the anchor tags loop, move before main crawl to abort on initial earl?
-    //if (! $url = $this->build_earl($this->url, $url)) return;
-
-        // FIXME: depth meant to prevent endless loops, fails.... 
-        //if ($depth === 0 && $this->is_same_host($url)) 
-
-        if (isset ($this->results[$url]))
-        {
-        $this->bugger_add(' isset ($this->results[$url]) RETURN', $url); // bugger
-        if ($this->page_pointer != 0 && ! isset ($this->site_map[$this->page_pointer][$url])) 
-            $this->site_map[$this->page_pointer][$url] = $this->results[$url]['status'];
-        return;
-        }
-
-    $hinfo = $this->get_head($url);
-    if ($hinfo['status'] == 500) $hinfo = $this->get_head($url, true); // some servers don't like HEAD
-    if ($hinfo['redirect']) $this->redirects[$url] = $hinfo['redirect'];
-
-    $this->results[$url] = array (
-        'status' => $hinfo['status'],
-        'depth' => $depth,
-    );
-    if ($this->page_pointer != 0 && ! isset ($this->site_map[$this->page_pointer][$url])) 
-        $this->site_map[$this->page_pointer][$url] = $this->results[$url]['status'];
-
-
-        if ($this->is_type_html($hinfo['content_type']) && $this->is_same_host($url) && $hinfo['status'] == 200) 
-        {
-        //$this->bugger_add('  $this->bugger_stop', $this->bugger_stop); // bugger
-        //if ($this->bugger_stop == 0) return; // stop N pages, for testing only
-        //$this->bugger_stop--;
-
-        $this->bugger_add(' get dom', $url); // bugger
-
-        if (! isset ($this->site_map[$url])) $this->site_map[$url] = array ();
-        $this->page_pointer = $url;
-        // $this->bugger_add('  page_pointer', $this->page_pointer); // bugger
-
-        $dom = new \DOMDocument('1.0');
-        @$dom->loadHTMLFile($url);
-
-        $sig = md5 ($dom->saveHTML());
-        if (! isset ($this->seen_hashes[$sig])) $this->seen_hashes[$sig] = $url;
-        else return $this->is_alias($sig, $url);
-
-        $anchors = $dom->getElementsByTagName('a');
-        $crawled = $seen; // saving links to find difference later // FIXME: in_array() slow!
-
-            foreach ($anchors as $element)
-            {
-            $a_href = $element->getAttribute('href');
-            $this->bugger_add('  each $a_href', $a_href); // bugger
-            $href = $this->build_earl($url, $a_href);
-            $this->bugger_add('  build_earl() $href', $href); // bugger
-
-            if (! $href) continue;
-            if ($this->is_ignore($href)) continue;
-
-            if ($this->is_translate($href)) $href = $this->translate_urls[$href];
-
-            $this->bugger_add('  add to site_map $href', $href); // bugger
-            $this->site_map[$this->page_pointer][$href] = false;
-            if (! in_array ($href, $seen)) $seen[] = $href; // FIXME: in_array() slow!
-            }
-        
-        // set array difference from links already marked to crawl
-        $crawl = array_diff ($seen, $crawled); // FIXME: in_array() slow!
-            
-        // check if there are links to crawl
-        if (! empty ($crawl)) array_map (array ($this, '_crawl'), $crawl, array_fill (0, count ($crawl), $depth - 1));
-        }
-
-    return $url;
     }
 
     /*****************
@@ -660,7 +634,8 @@ public function getResults() { return $this->results; }
 }
 
 
-$lch = new LinkChecker ($argv[1], 3);
+// $lch = new LinkChecker ($argv[1], 3);
+$lch = new LinkChecker ($argv[1]);
 $res = $lch->crawl();
 
 $lch->bugger_add('results', print_r ($res, 1));
