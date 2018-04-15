@@ -53,12 +53,12 @@ public function getResults() { return $this->results; }
     //public function __construct($url = null, $depth = null, $same_host = false)
     public function __construct($url = null, $depth = null)
     {
-    $this->bugger = true;
+    $this->bugger = false;
     //$this->bugger_stop = -1; // no stop
     // $this->bugger_stop = 3; // stop at $this->bugger_stop pages
 
     $this->curl_timeout = 30;
-    $this->delay = 2;
+    $this->delay = 3;
     $this->site_map = array ();
     $this->redirects = array ();
     $this->seen_hashes = array ();
@@ -443,7 +443,7 @@ public function getResults() { return $this->results; }
     // normalize query params, if exists
     $test_qs = parse_url ($href, PHP_URL_QUERY);
     if ($test_qs !== null) $href = $this->normalize_params($href);
-    else if (preg_match ('/#/', $href) $href = preg_replace ('/#.*$/', '', $href); // get rid of fragments
+    else if (preg_match ('/#/', $href)) $href = preg_replace ('/#.*$/', '', $href); // get rid of fragments
     
     // FIXME: preserve option to not check ext links, can be used for site-map generation
     // if ($this->same_host && $this->host != $this->get_host($href)) return false;
