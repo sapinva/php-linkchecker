@@ -1,3 +1,3 @@
 # php-linkchecker
 
-no frills linkchecker designed to produce concise reports
+no frills command line linkchecker designed to produce concise reports
