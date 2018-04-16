@@ -3,4 +3,5 @@
 no frills command line link checker designed to produce concise reports
 
 example usage:
-$ php linkchecker.php .site > report.html
+
+  $ php linkchecker.php .site > report.html
