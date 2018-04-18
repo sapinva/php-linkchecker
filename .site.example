@@ -17,7 +17,7 @@ ignore = "https://twitter.com/"
 # urls to translate (one or more url pairs)
 translate = "http://www.youtube.com/BobJohnson https://www.youtube.com/user/BobJohnson"
 
-# set to 1 in order to retry with GET request on status 4xx
+# set to 1 in order to retry with GET request on status 405
 retry_with_get = 1
 
 # create a bad links json report file
