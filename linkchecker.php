@@ -19,6 +19,8 @@
  * 
  */
 
+date_default_timezone_set ('America/New_York');
+
 /******************
 *                 *
 *   LinkChecker   *
@@ -29,13 +31,13 @@ class LinkChecker
     public function __construct ($url = false)
     {
     $this->exe_start = microtime (true);
-
-    $this->bugger = false;
-    $this->bugger_stop = -1; // stop at $this->bugger_stop pages for testing, -1 = no stop
-
     $this->VERSION = '0.9.1a';
     $this->site_url = false;
     $this->config = array (
+        'log_level' => 0,
+        'log_file' => false,
+        'truncate_log_file' => false,
+        'max_pages' => 100000,
         'request_timeout' => 30,
         'site_throttle' => 3,
         'ext_site_throttle' => 10,
@@ -62,9 +64,12 @@ class LinkChecker
         'cpu_time' => 0,
         'memory' => 0,
     );
+    $this->page_countdown = false;
 
     if (strpos ($url, 'http') !== 0 && file_exists ($url)) $this->parse_config($url);
     else if (! empty ($url)) $this->set_earl($url);
+
+    $this->log_write(date ('Y-m-d H:i:s'), 'starting check of ' . $url, 1);
     }
 
     /**************
@@ -86,34 +91,28 @@ class LinkChecker
     ***************/
     private function _crawl ($urlobj)
     {
-    $this->bugger_add('_crawl()...', ''); // bugger
-    $url = $urlobj->url;
-    $this->bugger_add('_crawl', $url); // bugger
-
-    if (empty ($url)) return;
-
-    $hinfo = $this->get_resource($urlobj);
+    if (! $urlobj->url) return;
+    $this->log_write('_crawl', $urlobj->url, 4); // bugger
     $this->stats['links']++;
 
+    $hinfo = $this->get_resource($urlobj);
     // if ($hinfo['status'] > 399 && $hinfo['status'] < 500 && $this->config['retry_with_get']) // 4xx = too many retries
     if ($hinfo['status'] == 405 && $this->config['retry_with_get']) // some servers don't like HEAD
         $hinfo = $this->get_resource($urlobj, true);
-    if ($hinfo['redirect']) $this->redirects[$url] = $hinfo['redirect'];
-    $this->results[$url] = array ('status' => $hinfo['status']);
-    if ($hinfo['error']) $this->results[$url]['error'] = $hinfo['error'];
-    if ($this->page_pointer != 0 && ! isset ($this->site_map[$this->page_pointer][$url]))
-        $this->site_map_set($this->page_pointer, $url, 'status', $this->results[$url]['status']);
+    if ($hinfo['redirect']) $this->redirects[$urlobj->url] = $hinfo['redirect'];
+    $this->results[$urlobj->url] = array ('status' => $hinfo['status']);
+    if ($hinfo['error']) $this->results[$urlobj->url]['error'] = $hinfo['error'];
+    if ($this->page_pointer != 0 && ! isset ($this->site_map[$this->page_pointer][$urlobj->url]))
+        $this->site_map_set($this->page_pointer, $urlobj->url, 'status', $this->results[$urlobj->url]['status']);
 
-        if ($this->bugger_stop != 0 && $this->is_type_html($hinfo['content_type']) && 
+        if ($this->page_countdown != 0 && $this->is_type_html($hinfo['content_type']) && 
             $urlobj->same_host && $hinfo['status'] == 200) 
         {
-        //if ($this->bugger_stop == 0) $this->bugger_add('bugger_stop', '.'); // bugger
-        //if ($this->bugger_stop == 0) return; // bugger // stop N pages, for testing only
-        $this->bugger_stop--; // bugger
-        $this->bugger_add(' get dom', $url); // bugger
-        $this->site_map_set($url);
-        $this->page_pointer = $url;
-        $this->bugger_add('  page_pointer', $this->page_pointer); // bugger
+        $this->page_countdown--;
+        $this->log_write(' get dom', $urlobj->url, 3); // bugger
+        $this->site_map_set($urlobj->url);
+        $this->page_pointer = $urlobj->url;
+        $this->log_write('  page_pointer', $this->page_pointer, 4); // bugger
 
         $dom = new DOMDocument('1.0');
 
@@ -122,23 +121,23 @@ class LinkChecker
         $this->stats['pages']++;
         @$dom->loadHTML($hinfo['content']);
         $sig = md5 ($hinfo['content']);
-        if (! isset ($this->seen_hashes[$sig])) $this->seen_hashes[$sig] = $url;
-        else return $this->is_alias($sig, $url);
+        if (! isset ($this->seen_hashes[$sig])) $this->seen_hashes[$sig] = $urlobj->url;
+        else return $this->is_alias($sig, $urlobj->url);
         $anchors = $dom->getElementsByTagName('a');
 
             foreach ($anchors as $element)
             {
             $a_href = $element->getAttribute('href');
             $this->stats['links_examined']++;
-            $this->bugger_add('  each $a_href', $a_href); // bugger
+            $this->log_write('  each $a_href', $a_href, 7); // bugger
             $ubh = new UrlBuilder ($a_href, $urlobj, array ('strip_fragment' => true,));
-            $this->bugger_add('   UrlBuilder() $a_href', $ubh->url); // bugger
+            $this->log_write('   UrlBuilder() $a_href', $ubh->url, 8); // bugger
 
             if (! $ubh->url) continue;
             if ($this->is_ignore($ubh->url)) continue;
             if ($this->is_translate($ubh->url)) $ubh->url = $this->config['translate_urls'][$ubh->url];
 
-            $this->bugger_add('    add to site_map $ubh->url', $ubh->url); // bugger
+            $this->log_write('    add to site_map $ubh->url', $ubh->url, 7); // bugger
             $this->site_map_set($this->page_pointer, $ubh->url, 'href', $a_href);
             
             if (! isset ($this->results[$ubh->url])) $this->crawl_queue[] = $ubh;
@@ -146,10 +145,10 @@ class LinkChecker
                                 
             while (count ($this->crawl_queue) > 0)
             {
-            $this->bugger_add('$this->crawl_queue', count ($this->crawl_queue)); // bugger
+            $this->log_write('$this->crawl_queue', count ($this->crawl_queue), 8); // bugger
             $target = array_shift ($this->crawl_queue);
             if (! isset ($this->results[$target->url])) $this->_crawl($target);
-            else $this->bugger_add('  already seen: ', $target->url); // bugger
+            else $this->log_write('  already seen: ', $target->url, 9); // bugger
             }
         }
 
@@ -180,7 +179,7 @@ class LinkChecker
     *********************/
     private function get_resource ($urlobj, $use_get = false)
     {
-    $this->bugger_add(' get_resource()', $urlobj->url . ($use_get ? ' (GET)' : '')); // bugger
+    $this->log_write(' get_resource()', $urlobj->url . ($use_get ? ' (GET)' : ''), 5); // bugger
     $tt = $this->get_throttle($urlobj->host, $urlobj->same_host);
     $this->throttle($tt);
     $res = array (
@@ -210,10 +209,10 @@ class LinkChecker
     curl_setopt ($ch, CURLOPT_TIMEOUT, $this->config['request_timeout']);
     $retdata = curl_exec ($ch);
     $err = curl_error ($ch);
-    if ($err != '') $this->bugger_add('curl_error', $err); // bugger
+    if ($err != '') $this->log_write('curl_error', $err, 7); // bugger
     $info = curl_getinfo ($ch);
     curl_close ($ch);
-    $this->bugger_add('curl_getinfo', $info); // bugger
+    $this->log_write('curl_getinfo', $info, 8); // bugger
     $res['status'] = $info['http_code'];
     $res['content_type'] = $info['content_type'];
     if ($err != '') $res['error'] = $err;
@@ -230,11 +229,11 @@ class LinkChecker
         {
         $res['redirect'] = $info['url'];
 
-            if (! $this->is_same_host($urlobj->url, $info['url']))
-            {
-            $res['status'] = 7;
-            $res['error'] = 'Secret Agent, redirected to another host! ' . $info['url'] . ' ' . $res['error'];
-            }
+            //if (! $this->is_same_host($urlobj->url, $info['url']))
+            //{
+            //$res['status'] = 7;
+            //$res['error'] = 'Secret Agent, redirected to another host! ' . $info['url'] . ' ' . $res['error'];
+            //}
         }
         
     return $res;
@@ -278,7 +277,7 @@ class LinkChecker
     *****************/
     private function throttle ($seconds) 
     {
-    $this->bugger_add(' throttle', $seconds); // bugger
+    $this->log_write(' throttle', $seconds, 6); // bugger
     sleep ($seconds);
     $this->stats['throttle_time'] += $seconds;
     }
@@ -367,6 +366,22 @@ class LinkChecker
     {
     $this->set_earl($conf['site']);
 
+    if (isset ($conf['log_level'])) $this->config['log_level'] = $conf['log_level'];
+
+    if (isset ($conf['truncate_log_file'])) 
+        $this->config['truncate_log_file'] = $this->config_bool($conf['truncate_log_file']);
+
+        if (isset ($conf['log_file']) && $this->config['log_level'] > 0)
+        {
+        $append = $this->config['truncate_log_file'] ? null : FILE_APPEND;
+        if (! file_put_contents ($conf['log_file'], "\n", $append)) 
+            $this->warning('log_file ' . $conf['log_file'] . ' not writable!');
+        else $this->config['log_file_h'] = fopen ($conf['log_file'], 'a');
+        }
+
+    if (isset ($conf['max_pages'])) $this->config['max_pages'] = $conf['max_pages'];
+    $this->page_countdown = $this->config['max_pages'];
+
     if (isset ($conf['site_throttle'])) $this->config['site_throttle'] = $conf['site_throttle'];
     if ($this->config['site_throttle'] < 3) $this->config['site_throttle'] = 3;
 
@@ -380,8 +395,8 @@ class LinkChecker
 
         if (isset ($conf['bad_links_report_json']))
         {
-        if (! file_put_contents ($conf['bad_links_report_json'], ' ')) 
-            $this->fatal_error($conf['bad_links_report_json'] . ' not writable!');
+        if (! file_put_contents ($conf['bad_links_report_json'], "\n", FILE_APPEND)) 
+            $this->fatal_error('bad_links_report_json ' . $conf['bad_links_report_json'] . ' not writable!');
         $this->config['bad_links_report_json'] = $conf['bad_links_report_json'];
         }
         
@@ -477,7 +492,7 @@ class LinkChecker
     private function is_ignore ($url)
     {
     $ignore = in_array ($url, $this->config['ignore_urls']) ? true : false; // FIXME: should take regex
-    if ($ignore) $this->bugger_add('*** is_ignore ***', $url); // bugger
+    if ($ignore) $this->log_write('ignored per config', $url, 4); // bugger
 
     return $ignore;
     }
@@ -490,7 +505,7 @@ class LinkChecker
     private function is_translate ($url)
     {
     $translate = in_array ($url, array_keys ($this->config['translate_urls'])) ? true : false; // FIXME: regex maybe?
-    if ($translate) $this->bugger_add('*** is_translate ***', $url); // bugger
+    if ($translate) $this->log_write('translated per config', $url, 4); // bugger
 
     return $translate;
     }
@@ -519,15 +534,29 @@ class LinkChecker
 
     /*******************
     *                  *
-    *   bugger_add()   *
+    *   __destruct()   * 
     *                  *
     *******************/
-    public function bugger_add ($label, $x)
+    public function __destruct ()
     {
-        if ($this->bugger)
+    $this->log_write(date ('Y-m-d H:i:s'), 'check complete', 1);
+    if (isset ($this->config['log_file_h']) && $this->config['log_file_h']) fclose ($this->config['log_file_h']);
+    }
+
+    /******************
+    *                 *
+    *   log_write()   * 
+    *                 *
+    ******************/
+    public function log_write ($label, $x, $level = 0)
+    {
+    $is_write = isset ($this->config['log_level']) && $level <= $this->config['log_level'] ? true : false;
+    $fh = isset ($this->config['log_file_h']) ? $this->config['log_file_h'] : false;
+
+        if ($fh && $is_write)
         {
-        if (is_array ($x) || is_object ($x)) error_log ($label . ': ' . print_r ($x, 1) . "\n", 3, 'LOG');
-        else error_log ($label . ': ' . $x . "\n", 3, 'LOG');
+        if (is_array ($x) || is_object ($x)) fwrite ($fh, $label . ': ' . print_r ($x, 1) . "\n");
+        else fwrite ($fh, $label . ': ' . $x . "\n");
         }
     }
 
@@ -578,7 +607,7 @@ class LinkChecker
     $this->stats['memory'] = memory_get_peak_usage ();
     $this->stats['run_time'] = $total_time;
     $this->stats['cpu_time'] = $total_time - $this->stats['throttle_time'];
-    $this->bugger_add('$this->stats', $this->stats); // bugger
+    $this->log_write('$this->stats', $this->stats, 3); // bugger
     }
 
     /********************
@@ -615,7 +644,7 @@ class LinkChecker
         if ($seconds > 0)
         {
         $secint = intval ($seconds);
-        $rem = str_replace ('0.', number_format ($seconds - $secint, 3));
+        $rem = str_replace ('0.', '', number_format ($seconds - $secint, 3));
         $pretty .= str_pad (intval ($seconds), 2, '0', STR_PAD_LEFT) . '.' . $rem;
         }
         else
@@ -633,7 +662,6 @@ class LinkChecker
     ******************/
     public function mk_report ()
     {
-    date_default_timezone_set ('America/New_York');
     $pages = array ();
 
         foreach (array_keys ($this->site_map) as $page)
@@ -669,7 +697,6 @@ class LinkChecker
                 {
                 if ($this->site_map[$page][$link]['status'] != 200)
                     print "<li><a href=\"" . $link . "\" target=\"_blank\">" . $link . "</a> " . 
-                        //$this->mk_pretty_status($this->site_map[$page][$link]['status']) . "</li>\n";
                         $this->mk_pretty_status($link, $this->site_map[$page][$link]) . "</li>\n";
                 }
 
@@ -693,7 +720,7 @@ class LinkChecker
     print 'wait time: ' . $this->pretty_time($this->stats['throttle_time']) . " <br>\n";
     print 'cpu time: ' . $this->pretty_time($this->stats['cpu_time']) . " <br>\n";
     print 'completed on: ' . date ('Y-m-d H:i:s') . "<br><br>\n";
-    print "<a href=\"https://github.com/sapinva/php-linkchecker\"" . 'php linkchecker v ' . $this->VERSION . "</a>\n";
+    print "<a href=\"https://github.com/sapinva/php-linkchecker\">" . 'php linkchecker v' . $this->VERSION . "</a>\n";
     print "</body>\n";
     print "</html>\n";
     }
@@ -949,15 +976,15 @@ class UrlBuilder
 $lch = new LinkChecker ($argv[1]);
 $lch->crawl();
 
-$lch->bugger_add('results', print_r ($lch->results, 1));
-$lch->bugger_add('', "\n");
-$lch->bugger_add('redirects', print_r ($lch->redirects, 1));
-$lch->bugger_add('', "\n");
-$lch->bugger_add('seen_hashes', print_r ($lch->seen_hashes, 1));
-$lch->bugger_add('', "\n");
-$lch->bugger_add('page_aliases', print_r ($lch->page_aliases, 1));
-$lch->bugger_add('', "\n");
-$lch->bugger_add('site_map', print_r ($lch->site_map, 1));
+$lch->log_write('results', print_r ($lch->results, 1), 6);
+$lch->log_write('', "\n", 6);
+$lch->log_write('redirects', print_r ($lch->redirects, 1), 6);
+$lch->log_write('', "\n", 6);
+$lch->log_write('seen_hashes', print_r ($lch->seen_hashes, 1), 6);
+$lch->log_write('', "\n", 6);
+$lch->log_write('page_aliases', print_r ($lch->page_aliases, 1), 6);
+$lch->log_write('', "\n", 6);
+$lch->log_write('site_map', print_r ($lch->site_map, 1), 6);
 
 $lch->mk_report();
 
