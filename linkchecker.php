@@ -19,7 +19,7 @@
  * 
  */
 
-date_default_timezone_set ('America/New_York');
+date_default_timezone_set (@date_default_timezone_get ());
 
 /******************
 *                 *
@@ -43,7 +43,9 @@ class LinkChecker
         'ext_site_throttle' => 10,
         'ignore_urls' => array (),
         'translate_urls' => array (),
-        'retry_with_get' => false,
+        'retry_with_get' => array ('403' => 1, '405' => 1),
+        'warn_redirect_to_other_host' => false,
+        'warn_all_redirect' => false,
         'bad_links_report_json' => false,
     );
     $this->crawl_queue = array ();
@@ -58,6 +60,7 @@ class LinkChecker
         'pages' => 0,
         'links' => 0,
         'bad_links' => 0,
+        'redirected_links' => 0,
         'links_examined' => 0,
         'run_time' => 0,
         'throttle_time' => 0,
@@ -67,9 +70,7 @@ class LinkChecker
     $this->page_countdown = false;
 
     if (strpos ($url, 'http') !== 0 && file_exists ($url)) $this->parse_config($url);
-    else if (! empty ($url)) $this->set_earl($url);
-
-    $this->log_write(date ('Y-m-d H:i:s'), 'starting check of ' . $url, 1);
+    else if (! empty ($url)) $this->set_site_url($url);
     }
 
     /**************
@@ -79,9 +80,31 @@ class LinkChecker
     **************/
     public function crawl ()
     {
+    $this->log_write(date ('Y-m-d H:i:s'), 'starting check of ' . $this->site_url->url, 1);
+
     $this->_crawl($this->site_url);
     $this->mk_site_map();
     if ($this->config['bad_links_report_json']) $this->mk_bad_links_json();
+
+    $this->log_write('results', $this->results, 6);
+    $this->log_write('redirects', $this->redirects, 6);
+    $this->log_write('seen_hashes', $this->seen_hashes, 6);
+    $this->log_write('page_aliases', $this->page_aliases, 6);
+    $this->log_write('site_map', $this->site_map, 6);
+
+    $this->mk_report();
+    }
+
+    /******************************
+    *                             *
+    *   get_redirected_status()   *
+    *                             *
+    ******************************/
+    private function get_redirected_status ($urlobj)
+    {
+    $hinfo = $this->get_resource($urlobj, false, true);
+
+    return $hinfo['status'];
     }
 
     /***************
@@ -96,10 +119,18 @@ class LinkChecker
     $this->stats['links']++;
 
     $hinfo = $this->get_resource($urlobj);
-    // if ($hinfo['status'] > 399 && $hinfo['status'] < 500 && $this->config['retry_with_get']) // 4xx = too many retries
-    if ($hinfo['status'] == 405 && $this->config['retry_with_get']) // some servers don't like HEAD
-        $hinfo = $this->get_resource($urlobj, true);
-    if ($hinfo['redirect']) $this->redirects[$urlobj->url] = $hinfo['redirect'];
+
+    if ($hinfo['status'] != 200 && isset ($this->config['retry_with_get'][$hinfo['status']])) // some servers don't like HEAD
+        $hinfo = $this->get_resource($urlobj, true, true);
+
+        if ($hinfo['redirect']) 
+        {
+        $this->redirects[$urlobj->url] = $hinfo['redirect'];
+        if ($this->config['warn_all_redirect'] ||
+            ($this->config['warn_redirect_to_other_host'] && $hinfo['redirect_other_host']) ) // only if reported
+                $hinfo['status'] = $this->get_redirected_status($urlobj);
+        }
+
     $this->results[$urlobj->url] = array ('status' => $hinfo['status']);
     if ($hinfo['error']) $this->results[$urlobj->url]['error'] = $hinfo['error'];
     if ($this->page_pointer != 0 && ! isset ($this->site_map[$this->page_pointer][$urlobj->url]))
@@ -117,7 +148,7 @@ class LinkChecker
         $dom = new DOMDocument('1.0');
 
 
-        $hinfo = $this->get_resource($urlobj, true);
+        $hinfo = $this->get_resource($urlobj, true, true);
         $this->stats['pages']++;
         @$dom->loadHTML($hinfo['content']);
         $sig = md5 ($hinfo['content']);
@@ -177,7 +208,7 @@ class LinkChecker
     *   get_resource()   *
     *                    *
     *********************/
-    private function get_resource ($urlobj, $use_get = false)
+    private function get_resource ($urlobj, $follow = true, $use_get = false)
     {
     $this->log_write(' get_resource()', $urlobj->url . ($use_get ? ' (GET)' : ''), 5); // bugger
     $tt = $this->get_throttle($urlobj->host, $urlobj->same_host);
@@ -185,11 +216,12 @@ class LinkChecker
     $res = array (
         'status' => 1,
         'redirect' => false,
+        'redirect_other_host' => false,
         'content_type' => false,
         'error' => false,
     );
     $ch = curl_init ($urlobj->url);
-    curl_setopt ($ch, CURLOPT_FOLLOWLOCATION, true);
+    if ($follow) curl_setopt ($ch, CURLOPT_FOLLOWLOCATION, true);
 
     if ($use_get) curl_setopt ($ch, CURLOPT_RETURNTRANSFER, true);
     else curl_setopt ($ch, CURLOPT_NOBODY, true);
@@ -220,20 +252,20 @@ class LinkChecker
 
         if ($err != '') 
         {
-        if (preg_match ('/Maximum \(\n+\) redirects/i', $err)) $res['status'] = 2;
-        else if (preg_match ('/resolve host/i', $err)) $res['status'] = 3;
-        else if (preg_match ('/connection timed out/i', $err)) $res['status'] = 4;
+        if (preg_match ('/Maximum \(\n+\) redirects/i', $err)) $res['status'] = 902;
+        else if (preg_match ('/resolve host/i', $err)) $res['status'] = 903;
+        else if (preg_match ('/connection timed out/i', $err)) $res['status'] = 904;
         }        
 
         if ($info['redirect_count']) 
         {
         $res['redirect'] = $info['url'];
 
-            //if (! $this->is_same_host($urlobj->url, $info['url']))
-            //{
-            //$res['status'] = 7;
-            //$res['error'] = 'Secret Agent, redirected to another host! ' . $info['url'] . ' ' . $res['error'];
-            //}
+            if (! $this->is_same_host($info['url'], $urlobj))
+            {
+            $res['error'] = 'redirected to another host! -> ' . $info['url'] . ' ' . $res['error'];
+            $res['redirect_other_host'] = true;
+            }
         }
         
     return $res;
@@ -364,12 +396,24 @@ class LinkChecker
     **********************/
     private function init_settings (&$conf)
     {
-    $this->set_earl($conf['site']);
+    $this->set_site_url($conf['site']);
+    $types = array (
+        'truncate_log_file' => 'bool',
+        'warn_redirect_to_other_host' => 'bool',
+        'warn_all_redirect' => 'bool',
+        'log_level' => 'val',
+        'max_pages' => 'val',
+        'site_throttle' => 'val',
+        'ext_site_throttle' => 'val',
+        'request_timeout' => 'val',
+        //'retry_with_get' => 'exists_list',
+    );
 
-    if (isset ($conf['log_level'])) $this->config['log_level'] = $conf['log_level'];
-
-    if (isset ($conf['truncate_log_file'])) 
-        $this->config['truncate_log_file'] = $this->config_bool($conf['truncate_log_file']);
+        foreach (array_keys ($types) as $k)
+            if ($types[$k] == 'bool' && isset ($conf[$k])) 
+                $this->config[$k] = $this->config_bool($conf[$k]);
+            else if ($types[$k] == 'val' && isset ($conf[$k])) 
+                $this->config[$k] = $conf[$k];
 
         if (isset ($conf['log_file']) && $this->config['log_level'] > 0)
         {
@@ -379,19 +423,9 @@ class LinkChecker
         else $this->config['log_file_h'] = fopen ($conf['log_file'], 'a');
         }
 
-    if (isset ($conf['max_pages'])) $this->config['max_pages'] = $conf['max_pages'];
     $this->page_countdown = $this->config['max_pages'];
-
-    if (isset ($conf['site_throttle'])) $this->config['site_throttle'] = $conf['site_throttle'];
     if ($this->config['site_throttle'] < 3) $this->config['site_throttle'] = 3;
-
-    if (isset ($conf['ext_site_throttle'])) $this->config['ext_site_throttle'] = $conf['ext_site_throttle'];
     if ($this->config['ext_site_throttle'] < 10) $this->config['ext_site_throttle'] = 10;
-
-    if (isset ($conf['request_timeout'])) $this->config['request_timeout'] = $conf['request_timeout'];
-
-    if (isset ($conf['retry_with_get'])) 
-        $this->config['retry_with_get'] = $this->config_bool($conf['retry_with_get']);
 
         if (isset ($conf['bad_links_report_json']))
         {
@@ -417,18 +451,27 @@ class LinkChecker
             $parts = preg_split ('/\s+/', $t);
             $this->config['translate_urls'][$parts[0]] = $parts[1];
             }
-        }        
+        }
+     
+        if (isset ($conf['retry_with_get']))
+        {
+        $items = preg_split ('/\s+/', trim ($conf['retry_with_get']));
+        $this->config['retry_with_get'] = array ();
+        foreach ($items as $i) $this->config['retry_with_get'][$i] = 1;
+        }   
     }
 
-    /*****************
-    *                *
-    *   set_earl()   *
-    *                *
-    *****************/
-    private function set_earl ($url)
+    /*********************
+    *                    *
+    *   set_site_url()   *
+    *                    *
+    *********************/
+    private function set_site_url ($url)
     {
     $ubh = new UrlBuilder ($url);
     if (! $ubh->url) $this->fatal_error('url is required');
+    // test it first? -- rewrite where base url gets redirected? else a warning for every page
+
     $this->site_url = $ubh;
     }
 
@@ -470,7 +513,7 @@ class LinkChecker
             {
                 foreach (array_keys ($this->site_map[$k]) as $url)
                 {
-                    if ($this->site_map[$k][$url]['status'] != 200)
+                    if ($this->report_test($this->site_map[$k][$url]['status'], $url))
                     {
                     if (! isset ($tmp[$k])) $tmp[$k] = array ();
                     if (! isset ($tmp[$k][$url])) $tmp[$k][$url] = $this->site_map[$k][$url];
@@ -567,24 +610,10 @@ class LinkChecker
     *************************/
     private function mk_pretty_status ($url, $code)
     {
-    $codes = array (
-        '1' => 'Unknown Error',
-        '2' => 'Too Many Redirects',
-        '3' => 'Could Not Resolve Host (DNS)',
-        '4' => 'Connection Timed Out',
-        // '7' => 'redirected to another host', <-- reserved, used in get_resource()
-        '301' => 'Moved Permanently',
-        '400' => 'Bad Request',
-        '401' => 'Unauthorized',
-        '403' => 'Forbidden',
-        '404' => 'Not Found',
-        '405' => 'Method Not Allowed',
-        '408' => 'Request Timeout',
-        '500' => 'Internal Server Error',
-    );
-    $out = str_pad ($code['status'], 3, '0', STR_PAD_LEFT);
-    if (isset ($codes[$code['status']])) $out .= ' ' . $codes[$code['status']];
-    else if (isset ($this->results[$url]['error']))  $out .= ' ' . $this->results[$url]['error'];
+    $out = '';
+
+    if ($text = HttpCodes::get($code)) $out .= $code . ' ' . $text;
+    if (isset ($this->results[$url]['error']))  $out .= ' - ' . $this->results[$url]['error'];
 
     return $out;
     }
@@ -598,10 +627,13 @@ class LinkChecker
     {
         foreach (array_keys ($this->results) as $r)
         {
-        if (! isset ($this->page_aliases[$r]) && $this->results[$r]['status'] != 200)
-            $this->stats['bad_links']++;
+            if (! isset ($this->page_aliases[$r]))
+            {
+            if ($this->results[$r]['status'] > 399) $this->stats['bad_links']++;
+            }
         }
 
+    $this->stats['redirected_links'] = count ($this->redirects);
     $exe_end = microtime (true);
     $total_time = $exe_end - $this->exe_start;
     $this->stats['memory'] = memory_get_peak_usage ();
@@ -655,6 +687,35 @@ class LinkChecker
     return $pretty;
     }
 
+    /*******************
+    *                  *
+    *   str_starts()   *
+    *                  *
+    *******************/
+    private function str_starts ($str, $starts)
+    {
+    return strpos ($str, $starts) === 0 ? true : false;
+    }
+
+    /********************
+    *                   *
+    *   report_test()   *
+    *                   *
+    ********************/
+    private function report_test ($code, $url)
+    {
+    $report = false;
+
+        if ($code > 399) $report = 'error';
+        else if ($this->config['warn_redirect_to_other_host'] && 
+                 isset ($this->results[$url]['error']) &&
+                 $this->str_starts ($this->results[$url]['error'], 'redirected to another host!'))
+                    $report = 'warn1';
+        else if ($this->config['warn_all_redirect'] && $code > 299 && $code < 400) $report = 'warn2';
+
+    return $report;
+    }
+
     /******************
     *                 *
     *   mk_report()   *
@@ -666,9 +727,9 @@ class LinkChecker
 
         foreach (array_keys ($this->site_map) as $page)
         {
-            foreach (array_keys ($this->site_map[$page]) as $link)
+            foreach (array_keys ($this->site_map[$page]) as $url)
             {
-                if ($this->site_map[$page][$link]['status'] != 200)
+                if ($this->report_test($this->site_map[$page][$url]['status'], $url))
                 {
                 $pages[] = $page;
                 break;
@@ -693,11 +754,11 @@ class LinkChecker
             print "<h3>Page <a href=\"" . $page . "\" target=\"_blank\">" . $page . "</a></h3>\n";
             print "<ul>\n";
 
-                foreach (array_keys ($this->site_map[$page]) as $link)
+                foreach (array_keys ($this->site_map[$page]) as $url)
                 {
-                if ($this->site_map[$page][$link]['status'] != 200)
-                    print "<li><a href=\"" . $link . "\" target=\"_blank\">" . $link . "</a> " . 
-                        $this->mk_pretty_status($link, $this->site_map[$page][$link]) . "</li>\n";
+                if ($this->report_test($this->site_map[$page][$url]['status'], $url))
+                    print "<li><a href=\"" . $url . "\" target=\"_blank\">" . $url . "</a> " . 
+                        $this->mk_pretty_status($url, $this->site_map[$page][$url]['status']) . "</li>\n";
                 }
 
             print "</ul>\n";
@@ -715,10 +776,11 @@ class LinkChecker
     print 'unique links: ' . number_format ($this->stats['links']) . "<br>\n";
     print 'examined links: ' . number_format ($this->stats['links_examined']) . "<br>\n";
     print 'bad links: ' . number_format ($this->stats['bad_links']) . "<br>\n";
+    print 'redirected links: ' . number_format ($this->stats['redirected_links']) . "<br>\n";
     print 'memory: ' . number_format ($this->stats['memory']) . " bytes <br>\n";
     print 'run time: ' . $this->pretty_time($this->stats['run_time']) . " <br>\n";
-    print 'wait time: ' . $this->pretty_time($this->stats['throttle_time']) . " <br>\n";
-    print 'cpu time: ' . $this->pretty_time($this->stats['cpu_time']) . " <br>\n";
+    print 'execution time: ' . $this->pretty_time($this->stats['cpu_time']) . " <br>\n";
+    print 'sleep time: ' . $this->pretty_time($this->stats['throttle_time']) . " <br>\n";
     print 'completed on: ' . date ('Y-m-d H:i:s') . "<br><br>\n";
     print "<a href=\"https://github.com/sapinva/php-linkchecker\">" . 'php linkchecker v' . $this->VERSION . "</a>\n";
     print "</body>\n";
@@ -779,7 +841,7 @@ class UrlBuilder
 
     $parts = parse_url (trim ($this->href));
     $this->scheme = ! empty ($parts['scheme']) ? $parts['scheme'] : $this->find_scheme();
-    $this->host = ! empty ($parts['host']) ? $parts['host'] : false;
+    $this->host = ! empty ($parts['host']) ? strtolower ($parts['host']) : false;
     $this->port = ! empty ($parts['port']) ? $parts['port'] : false;
     $this->query = ! empty ($parts['query']) ? $this->sort_params($parts['query']) : false;
     $this->fragment = ! empty ($parts['fragment']) ? $parts['fragment'] : false;
@@ -831,14 +893,14 @@ class UrlBuilder
             }
 
         $this->depth = substr_count ($this->path, '/');
-        $this->url = $this->implode_earl();
+        $this->url = $this->implode_url();
         }
         else
         {
         $this->depth = substr_count ($this->href, '/') - 2;
         $this->path = isset ($parts['path']) ? $parts['path'] : false;
 
-        $this->url = $this->implode_earl();
+        $this->url = $this->implode_url();
         }
     }
 
@@ -888,12 +950,12 @@ class UrlBuilder
         }
     }
 
-    /*********************
-    *                    *
-    *   implode_earl()   *
-    *                    *
-    *********************/
-    private function implode_earl ()
+    /********************
+    *                   *
+    *   implode_url()   *
+    *                   *
+    ********************/
+    private function implode_url ()
     {
     $url = $this->scheme . "://" . $this->host;
     if ($this->port) $url .= ':' . $this->port;
@@ -972,21 +1034,92 @@ class UrlBuilder
     }
 }
 
+class HttpCodes
+{
+    public static function get ($c)
+    {
+    $codes = array (
+        // 1xx Informational
+        '100' => 'Continue',
+        '101' => 'Switching Protocols',
+        '102' => 'Processing',
+        // 2xx Success
+        '200' => 'Found OK',
+        '201' => 'Created',
+        '202' => 'Accepted',
+        '203' => 'Non-authoritative Information',
+        '204' => 'No Content',
+        '205' => 'Reset Content',
+        '206' => 'Partial Content',
+        '207' => 'Multi-Status',
+        '208' => 'Already Reported',
+        '226' => 'IM Used',
+        // 3xx Redirection
+        '300' => 'Multiple Choices',
+        '301' => 'Moved Permanently',
+        '302' => 'Found',
+        '303' => 'See Other',
+        '304' => 'Not Modified',
+        '305' => 'Use Proxy',
+        '307' => 'Temporary Redirect',
+        '308' => 'Permanent Redirect',
+        // 4xx Client Error
+        '400' => 'Bad Request',
+        '401' => 'Unauthorized',
+        '402' => 'Payment Required',
+        '403' => 'Forbidden',
+        '404' => 'Not Found',
+        '405' => 'Method Not Allowed',
+        '406' => 'Not Acceptable',
+        '407' => 'Proxy Authentication Required',
+        '408' => 'Request Timeout',
+        '409' => 'Conflict',
+        '410' => 'Gone',
+        '411' => 'Length Required',
+        '412' => 'Precondition Failed',
+        '413' => 'Payload Too Large',
+        '414' => 'Request-URI Too Long',
+        '415' => 'Unsupported Media Type',
+        '416' => 'Requested Range Not Satisfiable',
+        '417' => 'Expectation Failed',
+        '418' => 'I\'m a teapot',
+        '421' => 'Misdirected Request',
+        '422' => 'Unprocessable Entity',
+        '423' => 'Locked',
+        '424' => 'Failed Dependency',
+        '426' => 'Upgrade Required',
+        '428' => 'Precondition Required',
+        '429' => 'Too Many Requests',
+        '431' => 'Request Header Fields Too Large',
+        '444' => 'Connection Closed Without Response',
+        '451' => 'Unavailable For Legal Reasons',
+        '499' => 'Client Closed Request',
+        // 5xx Server Error
+        '500' => 'Internal Server Error',
+        '501' => 'Not Implemented',
+        '502' => 'Bad Gateway',
+        '503' => 'Service Unavailable',
+        '504' => 'Gateway Timeout',
+        '505' => 'HTTP Version Not Supported',
+        '506' => 'Variant Also Negotiates',
+        '507' => 'Insufficient Storage',
+        '508' => 'Loop Detected',
+        '510' => 'Not Extended',
+        '511' => 'Network Authentication Required',
+        '599' => 'Network Connect Timeout Error',
+        // 9xx curl, other errors
+        '901' => 'Unknown Error',
+        '902' => 'Too Many Redirects',
+        '903' => 'Could Not Resolve Host (DNS)',
+        '904' => 'Connection Timed Out',
+    );
+
+    return isset ($codes[$c]) ? $codes[$c] : $codes['901'];
+    }
+}
 
 $lch = new LinkChecker ($argv[1]);
 $lch->crawl();
-
-$lch->log_write('results', print_r ($lch->results, 1), 6);
-$lch->log_write('', "\n", 6);
-$lch->log_write('redirects', print_r ($lch->redirects, 1), 6);
-$lch->log_write('', "\n", 6);
-$lch->log_write('seen_hashes', print_r ($lch->seen_hashes, 1), 6);
-$lch->log_write('', "\n", 6);
-$lch->log_write('page_aliases', print_r ($lch->page_aliases, 1), 6);
-$lch->log_write('', "\n", 6);
-$lch->log_write('site_map', print_r ($lch->site_map, 1), 6);
-
-$lch->mk_report();
 
 exit;
 
