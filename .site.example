@@ -1,4 +1,4 @@
-# base url to check
+# base url to check, the only required setting
 site = "https://bobjohnson.com/"
 
 # log level 0-9
@@ -27,8 +27,14 @@ ignore = "https://twitter.com/"
 # urls to translate (one or more url pairs)
 translate = "http://www.youtube.com/BobJohnson https://www.youtube.com/user/BobJohnson"
 
-# set to 1 in order to retry with GET request on status 405
-retry_with_get = 1
+# list status codes to retry with GET
+retry_with_get = "405 403"
 
-# create a bad links json report file
-bad_links_report_json = "path/to/report.json"
+# include warnings in report for redirects to different hosts
+warn_redirect_to_other_host = 0
+
+# include warnings in report for all redirects
+warn_all_redirect = 0
+
+# create a bad links json report file, if warnings are enabled they will also be in bad links json file
+bad_links_report_json = "/path/to/report.json"
