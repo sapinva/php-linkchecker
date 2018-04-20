@@ -1,6 +1,6 @@
 # php-linkchecker
 
-no frills command line link checker designed to produce concise reports with less false positives
+no frills command line link checker designed to produce concise reports with few false positives
 
 example usage:
 
