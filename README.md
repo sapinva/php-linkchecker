@@ -2,10 +2,18 @@
 
 no frills command line link checker designed to produce concise reports with few false positives
 
-example usage:
+usage:
 
-  $ php linkchecker.php site.config > report.html
+  php linkchecker.php http://abc.com/ > report.html
 
-or
+  php linkchecker.php /path/to/site.config > report.html
 
-  $ php linkchecker.php http://xyz.com/ > report.html
+  php linkchecker.php [options...]
+
+    --help
+      you're reading it
+
+    --config-template
+      outputs an example site config with all available options
+
+
