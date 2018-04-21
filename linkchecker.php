@@ -31,7 +31,7 @@ class LinkChecker
     public function __construct ($url = false)
     {
     $this->exe_start = microtime (true);
-    $this->VERSION = '0.9.1a';
+    $this->VERSION = '0.9.1b';
     $this->site_url = false;
     $this->config = array ();
     $this->crawl_queue = array ();
@@ -54,9 +54,164 @@ class LinkChecker
         'memory' => 0,
     );
     $this->page_countdown = false;
+    $copts = getopt ('', array ('help', 'config-template'));
 
-    if (strpos ($url, 'http') !== 0 && file_exists ($url)) $this->parse_config($url);
+    if (isset ($copts['help'])) $this->mk_help();
+    else if (isset ($copts['config-template'])) $this->mk_config_template();
+    else if (strpos ($url, 'http') !== 0 && file_exists ($url)) $this->parse_config($url);
     else if (! empty ($url)) $this->set_site_url($url);
+    }
+
+    /****************
+    *               *
+    *   mk_help()   *
+    *               *
+    ****************/
+    private function mk_help ()
+    {
+    print "\n";
+    print "usage:" . "\n";
+    print "\n";
+    print "  php linkchecker.php http://abc.com/ > report.html" . "\n";
+    print "\n";
+    print "  php linkchecker.php /path/to/site.config > report.html" . "\n";
+    print "\n";
+    print "  php linkchecker.php [options...]" . "\n";
+    print "\n";
+    print "    --help" . "\n";
+    print "      you're reading it" . "\n";
+    print "\n";
+    print "    --config-template" . "\n";
+    print "      outputs an example site config with all available options" . "\n";
+    print "\n";
+    exit;
+    }
+
+    /***************************
+    *                          *
+    *   mk_config_template()   *
+    *                          *
+    ***************************/
+    private function mk_config_template ()
+    {
+    $opts = $this->get_config_template();
+    print "\n";
+
+        foreach (array_keys ($opts) as $k)
+        {
+        print "# " . $opts[$k]['txt'] . "\n";
+        if (isset ($opts[$k]['xmp'])) print "# " . $k . " = " . $opts[$k]['xmp'] . "\n";
+        else print "# " . $k . " = " . $opts[$k]['def'] . "\n";
+        print "\n";
+        }
+
+    exit;
+    }
+
+    /****************************
+    *                           *
+    *   get_config_template()   *
+    *                           *
+    ****************************/
+    private function get_config_template ()
+    {
+    return array (
+        'site' => array (
+            'type' => false,
+            'txt' => 'base url to check, the only required setting',
+            'xmp' => "\"https://abc.com/\"",
+        ),
+        'log_file' => array (
+            'def' => false,
+            'type' => 'val',
+            'txt' => 'log file path (default none)',
+            'xmp' => "\"/path/to/linkchecker_log\"",
+        ),
+        'log_level' => array (
+            'def' => 0,
+            'type' => 'val',
+            'txt' => 'if log_file, log level 0-9',
+        ),
+        'truncate_log_file' => array (
+            'def' => false,
+            'type' => 'bool',
+            'txt' => 'if log_file, set to 1 to truncate log on each run',
+            'xmp' => '0',
+        ),
+        'max_pages' => array (
+            'def' => 100000,
+            'type' => 'val',
+            'txt' => 'stop after max_pages',
+        ),
+        'max_depth' => array (
+            'def' => 16,
+            'type' => 'val',
+            'txt' => 'ignore dir levels deeper than max_depth',
+        ),
+        'request_timeout' => array (
+            'def' => 30,
+            'type' => 'val',
+            'txt' => 'timeout for all requests',
+        ),
+        'site_throttle' => array (
+            'def' => 3,
+            'type' => 'val',
+            'txt' => 'minimum pause between requests to site host',
+        ),
+        'ext_site_throttle' => array (
+            'def' => 10,
+            'type' => 'val',
+            'txt' => 'minimum pause between requests to check external links, per host',
+        ),
+        'user_agent' => array (
+            'def' => 'Mozilla/5.0 (X11; Linux x86_64) plc/23.0',
+            'type' => 'val',
+            'txt' => 'set the user agent',
+            'xmp' => "\"MyBot was here 1.0\"",
+        ),
+        'strict_ssl_checking' => array (
+            'def' => false,
+            'type' => 'bool',
+            'txt' => 'verify ssl host and peer',
+            'xmp' => '0',
+        ),
+        'ignore' => array (
+            'def' => array (),
+            'type' => 'list',
+            'txt' => 'urls to ignore, repeat for each',
+            'xmp' => "\"https://twitter.com/\"",
+        ),
+        'translate' => array (
+            'def' => array (),
+            'type' => 'kv_list',
+            'txt' => 'space separated url pair to translate, repeat for each',
+            'xmp' => "\"http://www.youtube.com/BobJohnson https://www.youtube.com/user/BobJohnson\"",
+        ),
+        'retry_with_get' => array (
+            'def' => array ('403' => 1, '405' => 1),
+            'type' => 'exists_list',
+            'txt' => 'list status codes to retry with GET, space delimited',
+            'xmp' => "\"405 403\"",
+        ),
+        'warn_redirect_to_other_host' => array (
+            'def' => false,
+            'type' => 'bool',
+            'txt' => 'include warnings in report for redirects to different hosts (default none)',
+            'xmp' => '0',
+        ),
+        'warn_all_redirect' => array (
+            'def' => false,
+            'type' => 'bool',
+            'txt' => 'include warnings in report for all redirects (default none)',
+            'xmp' => '0',
+        ),
+        'bad_links_report_json' => array (
+            'def' => false,
+            'type' => 'val',
+            'txt' => 'create a bad links json report file (default none)',
+            'xmp' => "\"/path/to/report.json\"",
+        ),
+    );
     }
 
     /**********************
@@ -66,25 +221,11 @@ class LinkChecker
     **********************/
     private function init_settings (&$conf)
     {
-    $opts = array (
-        'log_level' => array ('def' => 0, 'type' => 'val'),
-        'log_file' => array ('def' => false, 'type' => 'val'),
-        'truncate_log_file' => array ('def' => false, 'type' => 'bool'),
-        'max_pages' => array ('def' => 100000, 'type' => 'val'),
-        'request_timeout' => array ('def' => 30, 'type' => 'val'),
-        'site_throttle' => array ('def' => 3, 'type' => 'val'),
-        'ext_site_throttle' => array ('def' => 10, 'type' => 'val'),
-        'ignore' => array ('def' => array (), 'type' => 'list'),
-        'translate' => array ('def' => array (), 'type' => 'kv_list'),
-        'retry_with_get' => array ('def' => array ('403' => 1, '405' => 1), 'type' => 'exists_list'),
-        'warn_redirect_to_other_host' => array ('def' => false, 'type' => 'bool'),
-        'warn_all_redirect' => array ('def' => false, 'type' => 'bool'),
-        'bad_links_report_json' => array ('def' => false, 'type' => 'val'),
-    );
+    $opts = $this->get_config_template();
 
         foreach (array_keys ($opts) as $opt)
         {
-        $this->config[$opt] = $opts[$opt]['def']; // set the defaults
+        if ($opts[$opt]['type']) $this->config[$opt] = $opts[$opt]['def']; // set the defaults
 
             if (isset ($conf[$opt])) // handle config file vals
             {
@@ -101,7 +242,7 @@ class LinkChecker
             }
         }
 
-        if (isset ($this->config['log_file']) && $this->config['log_level'] > 0)
+        if ($this->config['log_file'] && $this->config['log_level'] > 0)
         {
         $append = $this->config['truncate_log_file'] ? null : FILE_APPEND;
         if (! file_put_contents ($this->config['log_file'], "\n", $append)) 
@@ -109,7 +250,7 @@ class LinkChecker
         else $this->config['log_file_h'] = fopen ($this->config['log_file'], 'a');
         }
 
-        if (isset ($this->config['bad_links_report_json']))
+        if ($this->config['bad_links_report_json'])
         {
         if (! file_put_contents ($this->config['bad_links_report_json'], "\n", FILE_APPEND)) 
             $this->fatal_error('bad_links_report_json ' . $this->config['bad_links_report_json'] . ' not writable!');
@@ -186,8 +327,7 @@ class LinkChecker
     if ($this->page_pointer != 0 && ! isset ($this->site_map[$this->page_pointer][$urlobj->url]))
         $this->site_map_set($this->page_pointer, $urlobj->url, 'status', $this->results[$urlobj->url]['status']);
 
-        if ($this->page_countdown != 0 && $this->is_type_html($hinfo['content_type']) && 
-            $urlobj->same_host && $hinfo['status'] == 200) 
+        if ($this->is_follow_page($urlobj, $hinfo))
         {
         $this->page_countdown--;
         $this->log_write(' get dom', $urlobj->url, 3); // bugger
@@ -196,8 +336,6 @@ class LinkChecker
         $this->log_write('  page_pointer', $this->page_pointer, 4); // bugger
 
         $dom = new DOMDocument('1.0');
-
-
         $hinfo = $this->get_resource($urlobj, true, true);
         $this->stats['pages']++;
         @$dom->loadHTML($hinfo['content']);
@@ -234,6 +372,28 @@ class LinkChecker
         }
 
     return $urlobj;
+    }
+
+    /***********************
+    *                      *
+    *   is_follow_page()   *
+    *                      *
+    ***********************/
+    private function is_follow_page (&$urlobj, &$hinfo)
+    {
+    $follow = false;
+
+        if (
+            $this->page_countdown != 0 && 
+            $urlobj->same_host && 
+            $hinfo['status'] == 200 &&
+            $this->is_type_html($hinfo['content_type']) && 
+            $urlobj->depth <= $this->config['max_depth']
+            ) $follow = true;
+
+        if ($this->jailed_subdir && strpos ($urlobj->path, $this->site_url->path) !== 0) $follow = false;
+
+    return $follow;
     }
 
     /*********************
@@ -276,16 +436,17 @@ class LinkChecker
     if ($use_get) curl_setopt ($ch, CURLOPT_RETURNTRANSFER, true);
     else curl_setopt ($ch, CURLOPT_NOBODY, true);
 
-    curl_setopt ($ch, CURLOPT_SSL_VERIFYHOST, false);
-    curl_setopt ($ch, CURLOPT_SSL_VERIFYPEER, false);
-
+    if (! $this->config['strict_ssl_checking']) curl_setopt ($ch, CURLOPT_SSL_VERIFYHOST, false);
+    if (! $this->config['strict_ssl_checking']) curl_setopt ($ch, CURLOPT_SSL_VERIFYPEER, false);
+        
     $headers = array (
         'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*' . '/' . '*;q=0.8',
         'Accept-Encoding:	gzip, deflate',
         'Accept-Language:	en-US,en;q=0.5',
-        //'User-Agent:	Mozilla/5.0 (X11; Linux x86_64; rv:23.0) Gecko/20100101 Firefox/23.0',
-        'User-Agent:	Mozilla/5.0 (X11; Linux x86_64) Foobar/23.0',
     );
+    // 'User-Agent:	Mozilla/5.0 (X11; Linux x86_64; rv:23.0) Gecko/20100101 Firefox/23.0',
+    if ($this->config['user_agent']) $headers[] = 'User-Agent:	' . $this->config['user_agent'];
+
     curl_setopt ($ch, CURLOPT_HTTPHEADER, $headers);
 
     curl_setopt ($ch, CURLOPT_TIMEOUT, $this->config['request_timeout']);
@@ -448,8 +609,16 @@ class LinkChecker
     {
     $ubh = new UrlBuilder ($url);
     if (! $ubh->url) $this->fatal_error('url is required');
-    // test it first? -- rewrite where base url gets redirected? else a warning for every page
 
+    $test = $this->get_resource($ubh); // test it first: rewrite if base url gets redirected
+
+        if ($test['redirect'])
+        {
+        $this->log_write('base url ' . $url . ' was redirected, resetting', $test['redirect'], 1); // bugger
+        $ubh = new UrlBuilder ($test['redirect']);
+        }
+        
+    $this->jailed_subdir = strlen ($ubh->path) > 2 ? true : false;
     $this->site_url = $ubh;
     }
 
@@ -1141,27 +1310,6 @@ $lch = new LinkChecker ($argv[1]);
 $lch->crawl();
 
 exit;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 ?>
