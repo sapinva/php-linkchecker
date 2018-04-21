@@ -13,7 +13,7 @@ usage:
     --help
       you're reading it
 
-    --config-template
+    --site-config
       outputs an example site config with all available options
 
 
