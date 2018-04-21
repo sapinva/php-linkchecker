@@ -33,21 +33,7 @@ class LinkChecker
     $this->exe_start = microtime (true);
     $this->VERSION = '0.9.1a';
     $this->site_url = false;
-    $this->config = array (
-        'log_level' => 0,
-        'log_file' => false,
-        'truncate_log_file' => false,
-        'max_pages' => 100000,
-        'request_timeout' => 30,
-        'site_throttle' => 3,
-        'ext_site_throttle' => 10,
-        'ignore_urls' => array (),
-        'translate_urls' => array (),
-        'retry_with_get' => array ('403' => 1, '405' => 1),
-        'warn_redirect_to_other_host' => false,
-        'warn_all_redirect' => false,
-        'bad_links_report_json' => false,
-    );
+    $this->config = array ();
     $this->crawl_queue = array ();
     $this->page_pointer = false;
     $this->results = array ();
@@ -73,6 +59,70 @@ class LinkChecker
     else if (! empty ($url)) $this->set_site_url($url);
     }
 
+    /**********************
+    *                     *
+    *   init_settings()   *
+    *                     *
+    **********************/
+    private function init_settings (&$conf)
+    {
+    $opts = array (
+        'log_level' => array ('def' => 0, 'type' => 'val'),
+        'log_file' => array ('def' => false, 'type' => 'val'),
+        'truncate_log_file' => array ('def' => false, 'type' => 'bool'),
+        'max_pages' => array ('def' => 100000, 'type' => 'val'),
+        'request_timeout' => array ('def' => 30, 'type' => 'val'),
+        'site_throttle' => array ('def' => 3, 'type' => 'val'),
+        'ext_site_throttle' => array ('def' => 10, 'type' => 'val'),
+        'ignore' => array ('def' => array (), 'type' => 'list'),
+        'translate' => array ('def' => array (), 'type' => 'kv_list'),
+        'retry_with_get' => array ('def' => array ('403' => 1, '405' => 1), 'type' => 'exists_list'),
+        'warn_redirect_to_other_host' => array ('def' => false, 'type' => 'bool'),
+        'warn_all_redirect' => array ('def' => false, 'type' => 'bool'),
+        'bad_links_report_json' => array ('def' => false, 'type' => 'val'),
+    );
+
+        foreach (array_keys ($opts) as $opt)
+        {
+        $this->config[$opt] = $opts[$opt]['def']; // set the defaults
+
+            if (isset ($conf[$opt])) // handle config file vals
+            {
+                if ($opts[$opt]['type'] == 'bool') 
+                    $this->config[$opt] = $this->config_bool($conf[$opt]);
+                else if ($opts[$opt]['type'] == 'val') 
+                    $this->config[$opt] = $conf[$opt];
+                else if ($opts[$opt]['type'] == 'exists_list') 
+                    $this->config_mk_exists_list($opt, $conf);
+                else if ($opts[$opt]['type'] == 'list') 
+                    $this->config_mk_list($opt, $conf);
+                else if ($opts[$opt]['type'] == 'kv_list') 
+                    $this->config_mk_kv_list($opt, $conf);
+            }
+        }
+
+        if (isset ($this->config['log_file']) && $this->config['log_level'] > 0)
+        {
+        $append = $this->config['truncate_log_file'] ? null : FILE_APPEND;
+        if (! file_put_contents ($this->config['log_file'], "\n", $append)) 
+            $this->warning('log_file ' . $this->config['log_file'] . ' not writable!');
+        else $this->config['log_file_h'] = fopen ($this->config['log_file'], 'a');
+        }
+
+        if (isset ($this->config['bad_links_report_json']))
+        {
+        if (! file_put_contents ($this->config['bad_links_report_json'], "\n", FILE_APPEND)) 
+            $this->fatal_error('bad_links_report_json ' . $this->config['bad_links_report_json'] . ' not writable!');
+        }
+
+    $this->page_countdown = $this->config['max_pages'];
+    if ($this->config['site_throttle'] < 3) $this->config['site_throttle'] = 3;
+    if ($this->config['ext_site_throttle'] < 10) $this->config['ext_site_throttle'] = 10;
+    $this->set_site_url($conf['site']);
+
+    $this->log_write('$this->config', $this->config, 3); // bugger
+    }
+
     /**************
     *             *
     *   crawl()   *
@@ -86,11 +136,11 @@ class LinkChecker
     $this->mk_site_map();
     if ($this->config['bad_links_report_json']) $this->mk_bad_links_json();
 
-    $this->log_write('results', $this->results, 6);
-    $this->log_write('redirects', $this->redirects, 6);
-    $this->log_write('seen_hashes', $this->seen_hashes, 6);
-    $this->log_write('page_aliases', $this->page_aliases, 6);
-    $this->log_write('site_map', $this->site_map, 6);
+    $this->log_write('$this->results', $this->results, 6);
+    $this->log_write('$this->redirects', $this->redirects, 6);
+    $this->log_write('$this->seen_hashes', $this->seen_hashes, 6);
+    $this->log_write('$this->page_aliases', $this->page_aliases, 6);
+    $this->log_write('$this->site_map', $this->site_map, 6);
 
     $this->mk_report();
     }
@@ -166,7 +216,7 @@ class LinkChecker
 
             if (! $ubh->url) continue;
             if ($this->is_ignore($ubh->url)) continue;
-            if ($this->is_translate($ubh->url)) $ubh->url = $this->config['translate_urls'][$ubh->url];
+            if ($this->is_translate($ubh->url)) $ubh->url = $this->config['translate'][$ubh->url];
 
             $this->log_write('    add to site_map $ubh->url', $ubh->url, 7); // bugger
             $this->site_map_set($this->page_pointer, $ubh->url, 'href', $a_href);
@@ -389,78 +439,6 @@ class LinkChecker
     else return false;
     }
 
-    /**********************
-    *                     *
-    *   init_settings()   *
-    *                     *
-    **********************/
-    private function init_settings (&$conf)
-    {
-    $this->set_site_url($conf['site']);
-    $types = array (
-        'truncate_log_file' => 'bool',
-        'warn_redirect_to_other_host' => 'bool',
-        'warn_all_redirect' => 'bool',
-        'log_level' => 'val',
-        'max_pages' => 'val',
-        'site_throttle' => 'val',
-        'ext_site_throttle' => 'val',
-        'request_timeout' => 'val',
-        //'retry_with_get' => 'exists_list',
-    );
-
-        foreach (array_keys ($types) as $k)
-            if ($types[$k] == 'bool' && isset ($conf[$k])) 
-                $this->config[$k] = $this->config_bool($conf[$k]);
-            else if ($types[$k] == 'val' && isset ($conf[$k])) 
-                $this->config[$k] = $conf[$k];
-
-        if (isset ($conf['log_file']) && $this->config['log_level'] > 0)
-        {
-        $append = $this->config['truncate_log_file'] ? null : FILE_APPEND;
-        if (! file_put_contents ($conf['log_file'], "\n", $append)) 
-            $this->warning('log_file ' . $conf['log_file'] . ' not writable!');
-        else $this->config['log_file_h'] = fopen ($conf['log_file'], 'a');
-        }
-
-    $this->page_countdown = $this->config['max_pages'];
-    if ($this->config['site_throttle'] < 3) $this->config['site_throttle'] = 3;
-    if ($this->config['ext_site_throttle'] < 10) $this->config['ext_site_throttle'] = 10;
-
-        if (isset ($conf['bad_links_report_json']))
-        {
-        if (! file_put_contents ($conf['bad_links_report_json'], "\n", FILE_APPEND)) 
-            $this->fatal_error('bad_links_report_json ' . $conf['bad_links_report_json'] . ' not writable!');
-        $this->config['bad_links_report_json'] = $conf['bad_links_report_json'];
-        }
-        
-        if (isset ($conf['ignore']))
-        {
-        if (! is_array ($conf['ignore'])) $this->config['ignore_urls'] = array ($conf['ignore']);
-        else $this->config['ignore_urls'] = $conf['ignore'];
-        }
-        
-        if (isset ($conf['translate']))
-        {
-        $tmp = array ();
-        if (! is_array ($conf['translate'])) $tmp = array ($conf['translate']);
-        else $tmp = $conf['translate'];
-
-            foreach ($tmp as $t)
-            {
-            $parts = preg_split ('/\s+/', $t);
-            $this->config['translate_urls'][$parts[0]] = $parts[1];
-            }
-        }
-     
-        if (isset ($conf['retry_with_get']))
-        {
-        $items = preg_split ('/\s+/', trim ($conf['retry_with_get']));
-        $this->config['retry_with_get'] = array ();
-        foreach ($items as $i) $this->config['retry_with_get'][$i] = 1;
-        }   
-    }
-
     /*********************
     *                    *
     *   set_site_url()   *
@@ -527,6 +505,47 @@ class LinkChecker
         }
     }
 
+    /***********************
+    *                      *
+    *   config_mk_list()   *
+    *                      *
+    ***********************/
+    private function config_mk_list ($opt, $conf)
+    {
+    if (! is_array ($conf[$opt])) $this->config[$opt] = array ($conf[$opt]);
+    else $this->config[$opt] = $conf[$opt];
+    }
+
+    /******************************
+    *                             *
+    *   config_mk_exists_list()   *
+    *                             *
+    ******************************/
+    private function config_mk_exists_list ($opt, $conf)
+    {
+    $items = preg_split ('/\s+/', trim ($conf[$opt]));
+    $this->config[$opt] = array ();
+    foreach ($items as $i) $this->config[$opt][$i] = 1;
+    }
+
+    /**************************
+    *                         *
+    *   config_mk_kv_list()   *
+    *                         *
+    **************************/
+    private function config_mk_kv_list ($opt, $conf)
+    {
+    $tmp = array ();
+    if (! is_array ($conf[$opt])) $tmp = array ($conf[$opt]);
+    else $tmp = $conf[$opt];
+
+        foreach ($tmp as $t)
+        {
+        $parts = preg_split ('/\s+/', $t);
+        $this->config[$opt][$parts[0]] = $parts[1];
+        }
+    }
+
     /******************
     *                 *
     *   is_ignore()   *
@@ -534,7 +553,7 @@ class LinkChecker
     ******************/
     private function is_ignore ($url)
     {
-    $ignore = in_array ($url, $this->config['ignore_urls']) ? true : false; // FIXME: should take regex
+    $ignore = in_array ($url, $this->config['ignore']) ? true : false; // FIXME: should take regex
     if ($ignore) $this->log_write('ignored per config', $url, 4); // bugger
 
     return $ignore;
@@ -547,7 +566,7 @@ class LinkChecker
     *********************/
     private function is_translate ($url)
     {
-    $translate = in_array ($url, array_keys ($this->config['translate_urls'])) ? true : false; // FIXME: regex maybe?
+    $translate = in_array ($url, array_keys ($this->config['translate'])) ? true : false; // FIXME: regex maybe?
     if ($translate) $this->log_write('translated per config', $url, 4); // bugger
 
     return $translate;
