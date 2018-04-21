@@ -54,10 +54,10 @@ class LinkChecker
         'memory' => 0,
     );
     $this->page_countdown = false;
-    $copts = getopt ('', array ('help', 'config-template'));
+    $copts = getopt ('', array ('help', 'site-config'));
 
     if (isset ($copts['help'])) $this->mk_help();
-    else if (isset ($copts['config-template'])) $this->mk_config_template();
+    else if (isset ($copts['site-config'])) $this->mk_config_template();
     else if (strpos ($url, 'http') !== 0 && file_exists ($url)) $this->parse_config($url);
     else if (! empty ($url)) $this->set_site_url($url);
     }
@@ -81,7 +81,7 @@ class LinkChecker
     print "    --help" . "\n";
     print "      you're reading it" . "\n";
     print "\n";
-    print "    --config-template" . "\n";
+    print "    --site-config" . "\n";
     print "      outputs an example site config with all available options" . "\n";
     print "\n";
     exit;
