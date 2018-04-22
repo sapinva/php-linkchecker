@@ -181,6 +181,12 @@ class LinkChecker
             'txt' => 'urls to ignore, repeat for each',
             'xmp' => "\"https://twitter.com/\"",
         ),
+        'ignore_regex' => array (
+            'def' => array (),
+            'type' => 'list',
+            'txt' => 'url patterns to ignore (include the slashes), repeat for each',
+            'xmp' => "\"/\?C=\w;O$/\"",
+        ),
         'translate' => array (
             'def' => array (),
             'type' => 'kv_list',
@@ -246,7 +252,7 @@ class LinkChecker
         {
         $append = $this->config['truncate_log_file'] ? null : FILE_APPEND;
         if (! file_put_contents ($this->config['log_file'], "\n", $append)) 
-            $this->warning('log_file ' . $this->config['log_file'] . ' not writable!');
+            $this->fatal_error('log_file ' . $this->config['log_file'] . ' not writable!');
         else $this->config['log_file_h'] = fopen ($this->config['log_file'], 'a');
         }
 
@@ -271,8 +277,6 @@ class LinkChecker
     **************/
     public function crawl ()
     {
-    $this->log_write(date ('Y-m-d H:i:s'), 'starting check of ' . $this->site_url->url, 1);
-
     $this->_crawl($this->site_url);
     $this->mk_site_map();
     if ($this->config['bad_links_report_json']) $this->mk_bad_links_json();
@@ -353,7 +357,7 @@ class LinkChecker
             $this->log_write('   UrlBuilder() $a_href', $ubh->url, 8); // bugger
 
             if (! $ubh->url) continue;
-            if ($this->is_ignore($ubh->url)) continue;
+            if ($this->is_ignore($ubh->url) || $this->is_ignore_regex($ubh->url)) continue;
             if ($this->is_translate($ubh->url)) $ubh->url = $this->config['translate'][$ubh->url];
 
             $this->log_write('    add to site_map $ubh->url', $ubh->url, 7); // bugger
@@ -386,7 +390,8 @@ class LinkChecker
         if (
             $this->page_countdown != 0 && 
             $urlobj->same_host && 
-            $hinfo['status'] == 200 &&
+            // $hinfo['status'] == 200 &&
+            $hinfo['status'] < 400 &&
             $this->is_type_html($hinfo['content_type']) && 
             $urlobj->depth <= $this->config['max_depth']
             ) $follow = true;
@@ -532,18 +537,9 @@ class LinkChecker
     ********************/
     private function fatal_error ($x)
     {
+    $this->log_write('fatal_error', $x, 1);
     fwrite (STDERR, $x . "\n");
     exit;
-    }
-
-    /****************
-    *               *
-    *   warning()   *
-    *               *
-    ****************/
-    private function warning ($x)
-    {
-    fwrite (STDERR, $x . "\n");
     }
 
     /*********************
@@ -607,15 +603,18 @@ class LinkChecker
     *********************/
     private function set_site_url ($url)
     {
+    $this->log_write(date ('Y-m-d H:i:s'), 'starting check of ' . $url, 1);
+
     $ubh = new UrlBuilder ($url);
     if (! $ubh->url) $this->fatal_error('url is required');
-
+    $host = $ubh->host;
     $test = $this->get_resource($ubh); // test it first: rewrite if base url gets redirected
 
         if ($test['redirect'])
         {
         $this->log_write('base url ' . $url . ' was redirected, resetting', $test['redirect'], 1); // bugger
         $ubh = new UrlBuilder ($test['redirect']);
+        if ($host != $ubh->host) $this->fatal_error('base url redirects to another host: ' . $ubh->host);
         }
         
     $this->jailed_subdir = strlen ($ubh->path) > 2 ? true : false;
@@ -722,8 +721,30 @@ class LinkChecker
     ******************/
     private function is_ignore ($url)
     {
-    $ignore = in_array ($url, $this->config['ignore']) ? true : false; // FIXME: should take regex
+    $ignore = in_array ($url, $this->config['ignore']) ? true : false;
     if ($ignore) $this->log_write('ignored per config', $url, 4); // bugger
+
+    return $ignore;
+    }
+
+    /************************
+    *                       *
+    *   is_ignore_regex()   *
+    *                       *
+    ************************/
+    private function is_ignore_regex ($url)
+    {
+    $ignore = false;
+
+        foreach ($this->config['ignore_regex'] as $rx)
+        {
+            if (preg_match ($rx, $url))
+            {   
+            $ignore = true;
+            $this->log_write('ignored pattern ' . $rx . ' per config', $url, 4); // bugger
+            break;
+            }
+        }
 
     return $ignore;
     }
