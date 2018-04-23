@@ -314,16 +314,23 @@ class LinkChecker
     $this->stats['links']++;
 
     $hinfo = $this->get_resource($urlobj);
+    $redir_url = false;
 
     if ($hinfo['status'] != 200 && isset ($this->config['retry_with_get'][$hinfo['status']])) // some servers don't like HEAD
         $hinfo = $this->get_resource($urlobj, true, true);
 
         if ($hinfo['redirect']) 
         {
+        $redir_url = new UrlBuilder ($hinfo['redirect'], $urlobj);
         $this->redirects[$urlobj->url] = $hinfo['redirect'];
+
         if ($this->config['warn_all_redirect'] ||
             ($this->config['warn_redirect_to_other_host'] && $hinfo['redirect_other_host']) ) // only if reported
                 $hinfo['status'] = $this->get_redirected_status($urlobj);
+
+        // if scheme switch, keep the scheme that server gives us on redirect, not the one link provided
+        //if ($urlobj->host == $redir_url->host && $urlobj->scheme != $redir_url->scheme)
+        //    $urlobj->set_scheme($redir_url->scheme);
         }
 
     $this->results[$urlobj->url] = array ('status' => $hinfo['status']);
@@ -331,7 +338,7 @@ class LinkChecker
     if ($this->page_pointer != 0 && ! isset ($this->site_map[$this->page_pointer][$urlobj->url]))
         $this->site_map_set($this->page_pointer, $urlobj->url, 'status', $this->results[$urlobj->url]['status']);
 
-        if ($this->is_follow_page($urlobj, $hinfo))
+        if ($this->is_follow_page($urlobj, $hinfo, $redir_url))
         {
         $this->page_countdown--;
         $this->log_write(' get dom', $urlobj->url, 3); // bugger
@@ -361,6 +368,8 @@ class LinkChecker
             if ($this->is_translate($ubh->url)) $ubh->url = $this->config['translate'][$ubh->url];
 
             $this->log_write('    add to site_map $ubh->url', $ubh->url, 7); // bugger
+
+            // FIXME: maybe should be moved to after results, in case it is changed due to redirect
             $this->site_map_set($this->page_pointer, $ubh->url, 'href', $a_href);
             
             if (! isset ($this->results[$ubh->url])) $this->crawl_queue[] = $ubh;
@@ -383,7 +392,7 @@ class LinkChecker
     *   is_follow_page()   *
     *                      *
     ***********************/
-    private function is_follow_page (&$urlobj, &$hinfo)
+    private function is_follow_page (&$urlobj, &$hinfo, $redir = false)
     {
     $follow = false;
 
@@ -396,6 +405,13 @@ class LinkChecker
             $urlobj->depth <= $this->config['max_depth']
             ) $follow = true;
 
+        if ($redir)
+        {
+        if ($redir->host != $urlobj->host) $follow = false;
+        if ($redir->scheme != $urlobj->scheme) $follow = false;
+        if ($redir->port != $urlobj->port) $follow = false;
+        }
+        
         if ($this->jailed_subdir && strpos ($urlobj->path, $this->site_url->path) !== 0) $follow = false;
 
     return $follow;
@@ -1024,6 +1040,17 @@ class UrlBuilder
     $this->parse_href();
     }
     
+    /*******************
+    *                  *
+    *   set_scheme()   *
+    *                  *
+    *******************/
+    public function set_scheme ($scheme)
+    {
+    $this->scheme = $scheme;
+    $this->url = $this->implode_url();
+    }
+    
     /*****************
     *                *
     *   set_opts()   *
@@ -1243,6 +1270,11 @@ class UrlBuilder
     }
 }
 
+/****************
+*               *
+*   HttpCodes   *
+*               *
+****************/
 class HttpCodes
 {
     public static function get ($c)
