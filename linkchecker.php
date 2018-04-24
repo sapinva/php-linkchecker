@@ -684,7 +684,7 @@ class LinkChecker
             }
 
         if (defined ('JSON_PRETTY_PRINT')) fwrite ($fh, json_encode ($tmp, JSON_PRETTY_PRINT));
-        else fwrite ($fh, json_encode ($tmp, JSON_PRETTY_PRINT));
+        else fwrite ($fh, json_encode ($tmp));
         fclose ($fh);
         }
     }
