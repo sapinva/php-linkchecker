@@ -6,7 +6,7 @@ usage:
 
   php linkchecker.php http://abc.com/ > report.html
 
-  php linkchecker.php /path/to/site.config > report.html
+  php linkchecker.php path/to/config
 
   php linkchecker.php [options...]
 
