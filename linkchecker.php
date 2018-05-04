@@ -31,7 +31,7 @@ class LinkChecker
     public function __construct ($url = false)
     {
     $this->exe_start = microtime (true);
-    $this->VERSION = '0.9.1b';
+    $this->VERSION = '0.9.2';
     $this->site_url = false;
     $this->config = array ();
     $this->crawl_queue = array ();
@@ -59,7 +59,18 @@ class LinkChecker
     if (isset ($copts['help'])) $this->mk_help();
     else if (isset ($copts['site-config'])) $this->mk_config_template();
     else if (strpos ($url, 'http') !== 0 && file_exists ($url)) $this->parse_config($url);
-    else if (! empty ($url)) $this->set_site_url($url);
+    else if (! empty ($url)) $this->quick_crawl($url);
+    }
+
+    /********************
+    *                   *
+    *   quick_crawl()   *
+    *                   *
+    ********************/
+    private function quick_crawl ($url)
+    {
+    $config = array ('site' => $url);
+    $this->init_settings($config);
     }
 
     /****************
@@ -74,7 +85,7 @@ class LinkChecker
     print "\n";
     print "  php linkchecker.php http://abc.com/ > report.html" . "\n";
     print "\n";
-    print "  php linkchecker.php /path/to/site.config > report.html" . "\n";
+    print "  php linkchecker.php path/to/config" . "\n";
     print "\n";
     print "  php linkchecker.php [options...]" . "\n";
     print "\n";
@@ -84,6 +95,8 @@ class LinkChecker
     print "    --site-config" . "\n";
     print "      outputs an example site config with all available options" . "\n";
     print "\n";
+    print "  config options:\n";
+    $this->mk_config_template(true);
     exit;
     }
 
@@ -92,16 +105,18 @@ class LinkChecker
     *   mk_config_template()   *
     *                          *
     ***************************/
-    private function mk_config_template ()
+    private function mk_config_template ($is_help = false)
     {
     $opts = $this->get_config_template();
     print "\n";
+    $pad = $is_help ? '    ' : '';
+    $cmt = $is_help ? '' : '# ';
 
         foreach (array_keys ($opts) as $k)
         {
-        print "# " . $opts[$k]['txt'] . "\n";
-        if (isset ($opts[$k]['xmp'])) print "# " . $k . " = " . $opts[$k]['xmp'] . "\n";
-        else print "# " . $k . " = " . $opts[$k]['def'] . "\n";
+        print $pad . "# " . $opts[$k]['txt'] . "\n";
+        if (isset ($opts[$k]['xmp'])) print $pad . $cmt . $k . " = " . $opts[$k]['xmp'] . "\n";
+        else print $pad . $cmt . $k . " = " . $opts[$k]['def'] . "\n";
         print "\n";
         }
 
@@ -211,6 +226,12 @@ class LinkChecker
             'txt' => 'include warnings in report for all redirects (default none)',
             'xmp' => '0',
         ),
+        'report_html' => array (
+            'def' => false,
+            'type' => 'val',
+            'txt' => 'html report to file (instead of stdout)',
+            'xmp' => "\"/path/to/report.html\"",
+        ),
         'bad_links_report_json' => array (
             'def' => false,
             'type' => 'val',
@@ -260,6 +281,12 @@ class LinkChecker
         {
         if (! file_put_contents ($this->config['bad_links_report_json'], "\n", FILE_APPEND)) 
             $this->fatal_error('bad_links_report_json ' . $this->config['bad_links_report_json'] . ' not writable!');
+        }
+
+        if ($this->config['report_html'])
+        {
+        if (! file_put_contents ($this->config['report_html'], "\n", FILE_APPEND)) 
+            $this->fatal_error('report_html ' . $this->config['report_html'] . ' not writable!');
         }
 
     $this->page_countdown = $this->config['max_pages'];
@@ -949,6 +976,9 @@ class LinkChecker
     public function mk_report ()
     {
     $pages = array ();
+    $fh = false;
+    if ($this->config['report_html']) $fh = fopen ($this->config['report_html'], 'w');
+    else $fh = STDOUT;
 
         foreach (array_keys ($this->site_map) as $page)
         {
@@ -962,55 +992,56 @@ class LinkChecker
             }
         }
 
-    print "<html>\n";
-    print "<head>\n";
-    print "<style> body { font-size: 12px; } h1, h2 { text-align: center; } </style>\n";
-    print "</head>\n";
-    print "<body>\n";
+    fwrite ($fh, "<html>\n");
+    fwrite ($fh, "<head>\n");
+    fwrite ($fh, "<style> body { font-size: 12px; } h1, h2 { text-align: center; } </style>\n");
+    fwrite ($fh, "</head>\n");
+    fwrite ($fh, "<body>\n");
 
-    print "<h1>Linkchecker Report for " . $this->site_url->url . "</h1>\n";
-    print "<h2>generated on " . date ('Y-m-d') . "</h2>\n";
+    fwrite ($fh, "<h1>Linkchecker Report for " . $this->site_url->url . "</h1>\n");
+    fwrite ($fh, "<h2>generated on " . date ('Y-m-d') . "</h2>\n");
 
         if (count ($pages) > 0)
         {
             foreach ($pages as $page)
             {
-            print "<hr>\n";
-            print "<h3>Page <a href=\"" . $page . "\" target=\"_blank\">" . $page . "</a></h3>\n";
-            print "<ul>\n";
+            fwrite ($fh, "<hr>\n");
+            fwrite ($fh, "<h3>Page <a href=\"" . $page . "\" target=\"_blank\">" . $page . "</a></h3>\n");
+            fwrite ($fh, "<ul>\n");
 
                 foreach (array_keys ($this->site_map[$page]) as $url)
                 {
                 if ($this->report_test($this->site_map[$page][$url]['status'], $url))
-                    print "<li><a href=\"" . $url . "\" target=\"_blank\">" . $url . "</a> " . 
-                        $this->mk_pretty_status($url, $this->site_map[$page][$url]['status']) . "</li>\n";
+                    fwrite ($fh, "<li><a href=\"" . $url . "\" target=\"_blank\">" . $url . "</a> " . 
+                        $this->mk_pretty_status($url, $this->site_map[$page][$url]['status']) . "</li>\n");
                 }
 
-            print "</ul>\n";
+            fwrite ($fh, "</ul>\n");
             }
         }
         else
         {
-        print "<h2>zero bad links :)</h2>\n";
+        fwrite ($fh, "<h2>zero bad links :)</h2>\n");
         }
 
-    print "<hr>\n";
+    fwrite ($fh, "<hr>\n");
 
     $this->mk_stats();
-    print 'pages: ' . number_format ($this->stats['pages']) . "<br>\n";
-    print 'unique links: ' . number_format ($this->stats['links']) . "<br>\n";
-    print 'examined links: ' . number_format ($this->stats['links_examined']) . "<br>\n";
-    print 'bad links: ' . number_format ($this->stats['bad_links']) . "<br>\n";
-    print 'redirected links: ' . number_format ($this->stats['redirected_links']) . "<br>\n";
-    print 'memory: ' . number_format ($this->stats['memory']) . " bytes <br>\n";
-    print 'run time: ' . $this->pretty_time($this->stats['run_time']) . " <br>\n";
-    print 'execution time: ' . $this->pretty_time($this->stats['cpu_time']) . " <br>\n";
-    print 'sleep time: ' . $this->pretty_time($this->stats['throttle_time']) . " <br>\n";
-    print 'completed on: ' . date ('Y-m-d H:i:s') . "<br><br>\n";
-    print "<a href=\"https://github.com/sapinva/php-linkchecker\" target=\"_blank\" rel=\"noreferrer\">" . 
-            'php linkchecker v' . $this->VERSION . "</a>\n";
-    print "</body>\n";
-    print "</html>\n";
+    fwrite ($fh, 'pages: ' . number_format ($this->stats['pages']) . "<br>\n");
+    fwrite ($fh, 'unique links: ' . number_format ($this->stats['links']) . "<br>\n");
+    fwrite ($fh, 'examined links: ' . number_format ($this->stats['links_examined']) . "<br>\n");
+    fwrite ($fh, 'bad links: ' . number_format ($this->stats['bad_links']) . "<br>\n");
+    fwrite ($fh, 'redirected links: ' . number_format ($this->stats['redirected_links']) . "<br>\n");
+    fwrite ($fh, 'memory: ' . number_format ($this->stats['memory']) . " bytes <br>\n");
+    fwrite ($fh, 'run time: ' . $this->pretty_time($this->stats['run_time']) . " <br>\n");
+    fwrite ($fh, 'execution time: ' . $this->pretty_time($this->stats['cpu_time']) . " <br>\n");
+    fwrite ($fh, 'sleep time: ' . $this->pretty_time($this->stats['throttle_time']) . " <br>\n");
+    fwrite ($fh, 'completed on: ' . date ('Y-m-d H:i:s') . "<br><br>\n");
+    fwrite ($fh, "<a href=\"https://github.com/sapinva/php-linkchecker\" target=\"_blank\" rel=\"noreferrer\">" . 
+            'php linkchecker v' . $this->VERSION . "</a>\n");
+    fwrite ($fh, "</body>\n");
+    fwrite ($fh, "</html>\n");
+    if ($this->config['report_html']) fclose ($fh);
     }
 }
 
