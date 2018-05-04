@@ -1007,7 +1007,8 @@ class LinkChecker
     print 'execution time: ' . $this->pretty_time($this->stats['cpu_time']) . " <br>\n";
     print 'sleep time: ' . $this->pretty_time($this->stats['throttle_time']) . " <br>\n";
     print 'completed on: ' . date ('Y-m-d H:i:s') . "<br><br>\n";
-    print "<a href=\"https://github.com/sapinva/php-linkchecker\">" . 'php linkchecker v' . $this->VERSION . "</a>\n";
+    print "<a href=\"https://github.com/sapinva/php-linkchecker\" target=\"_blank\" rel=\"noreferrer\">" . 
+            'php linkchecker v' . $this->VERSION . "</a>\n";
     print "</body>\n";
     print "</html>\n";
     }
