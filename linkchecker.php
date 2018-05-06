@@ -30,17 +30,18 @@ class LinkChecker
 {
     public function __construct ($url = false)
     {
+    $this->VERSION = '0.9.3b';
     $this->exe_start = microtime (true);
-    $this->VERSION = '0.9.2';
     $this->site_url = false;
     $this->config = array ();
     $this->crawl_queue = array ();
     $this->page_pointer = false;
     $this->results = array ();
+    $this->errors = array ();
     $this->site_map = array ();
     $this->redirects = array ();
-    $this->seen_hashes = array ();
-    $this->page_aliases = array ();
+    $this->seen_hashes = false;
+    $this->page_aliases = false;
     $this->host_cache = array ();
     $this->stats = array (
         'pages' => 0,
@@ -209,10 +210,10 @@ class LinkChecker
             'xmp' => "\"http://www.youtube.com/BobJohnson https://www.youtube.com/user/BobJohnson\"",
         ),
         'retry_with_get' => array (
-            'def' => array ('403' => 1, '405' => 1),
+            'def' => array ('400' => 1, '403' => 1, '405' => 1),
             'type' => 'exists_list',
             'txt' => 'list status codes to retry with GET, space delimited',
-            'xmp' => "\"405 403\"",
+            'xmp' => "\"400 403 405\"",
         ),
         'warn_redirect_to_other_host' => array (
             'def' => false,
@@ -224,6 +225,12 @@ class LinkChecker
             'def' => false,
             'type' => 'bool',
             'txt' => 'include warnings in report for all redirects (default none)',
+            'xmp' => '0',
+        ),
+        'ignore_duplicate_content' => array (
+            'def' => false,
+            'type' => 'bool',
+            'txt' => 'ignore pages with content duplicated on other pages, caution is memory hog',
             'xmp' => '0',
         ),
         'report_html' => array (
@@ -289,6 +296,12 @@ class LinkChecker
             $this->fatal_error('report_html ' . $this->config['report_html'] . ' not writable!');
         }
 
+        if ($this->config['ignore_duplicate_content'])
+        {
+        $this->seen_hashes = array ();
+        $this->page_aliases = array ();
+        }
+
     $this->page_countdown = $this->config['max_pages'];
     if ($this->config['site_throttle'] < 3) $this->config['site_throttle'] = 3;
     if ($this->config['ext_site_throttle'] < 10) $this->config['ext_site_throttle'] = 10;
@@ -304,14 +317,15 @@ class LinkChecker
     **************/
     public function crawl ()
     {
+    $this->page_pointer = $this->site_url->url;
     $this->_crawl($this->site_url);
     $this->mk_site_map();
     if ($this->config['bad_links_report_json']) $this->mk_bad_links_json();
 
     $this->log_write('$this->results', $this->results, 6);
     $this->log_write('$this->redirects', $this->redirects, 6);
-    $this->log_write('$this->seen_hashes', $this->seen_hashes, 6);
-    $this->log_write('$this->page_aliases', $this->page_aliases, 6);
+    if ($this->config['ignore_duplicate_content']) $this->log_write('$this->seen_hashes', $this->seen_hashes, 6);
+    if ($this->config['ignore_duplicate_content']) $this->log_write('$this->page_aliases', $this->page_aliases, 6);
     $this->log_write('$this->site_map', $this->site_map, 6);
 
     $this->mk_report();
@@ -334,52 +348,43 @@ class LinkChecker
     *   _crawl()   *
     *              *
     ***************/
-    private function _crawl ($urlobj)
+    private function _crawl (&$urlobj)
     {
     if (! $urlobj->url) return;
     $this->log_write('_crawl', $urlobj->url, 4); // bugger
     $this->stats['links']++;
-
     $hinfo = $this->get_resource($urlobj);
     $redir_url = false;
-
     if ($hinfo['status'] != 200 && isset ($this->config['retry_with_get'][$hinfo['status']])) // some servers don't like HEAD
         $hinfo = $this->get_resource($urlobj, true, true);
 
         if ($hinfo['redirect']) 
         {
         $redir_url = new UrlBuilder ($hinfo['redirect'], $urlobj);
-        $this->redirects[$urlobj->url] = $hinfo['redirect'];
-
-        if ($this->config['warn_all_redirect'] ||
-            ($this->config['warn_redirect_to_other_host'] && $hinfo['redirect_other_host']) ) // only if reported
-                $hinfo['status'] = $this->get_redirected_status($urlobj);
-
-        // if scheme switch, keep the scheme that server gives us on redirect, not the one link provided
-        //if ($urlobj->host == $redir_url->host && $urlobj->scheme != $redir_url->scheme)
-        //    $urlobj->set_scheme($redir_url->scheme);
+        $this->report_redirect($urlobj, $hinfo);
         }
 
-    $this->results[$urlobj->url] = array ('status' => $hinfo['status']);
-    if ($hinfo['error']) $this->results[$urlobj->url]['error'] = $hinfo['error'];
-    if ($this->page_pointer != 0 && ! isset ($this->site_map[$this->page_pointer][$urlobj->url]))
-        $this->site_map_set($this->page_pointer, $urlobj->url, 'status', $this->results[$urlobj->url]['status']);
+    $this->results[$urlobj->url] = $hinfo['status'];
+    if ($hinfo['error']) $this->errors[$urlobj->url] = $hinfo['error'];
 
-        if ($this->is_follow_page($urlobj, $hinfo, $redir_url))
+        if ($hinfo = $this->is_follow_page($urlobj, $hinfo, $redir_url))
         {
         $this->page_countdown--;
         $this->log_write(' get dom', $urlobj->url, 3); // bugger
-        $this->site_map_set($urlobj->url);
         $this->page_pointer = $urlobj->url;
         $this->log_write('  page_pointer', $this->page_pointer, 4); // bugger
 
         $dom = new DOMDocument('1.0');
-        $hinfo = $this->get_resource($urlobj, true, true);
         $this->stats['pages']++;
         @$dom->loadHTML($hinfo['content']);
-        $sig = md5 ($hinfo['content']);
-        if (! isset ($this->seen_hashes[$sig])) $this->seen_hashes[$sig] = $urlobj->url;
-        else return $this->is_alias($sig, $urlobj->url);
+
+            if ($this->config['ignore_duplicate_content'])
+            {
+            $sig = md5 ($hinfo['content']);
+            if (! isset ($this->seen_hashes[$sig])) $this->seen_hashes[$sig] = $urlobj->url;
+            else return $this->is_alias($sig, $urlobj->url);
+            }
+            
         $anchors = $dom->getElementsByTagName('a');
 
             foreach ($anchors as $element)
@@ -396,7 +401,6 @@ class LinkChecker
 
             $this->log_write('    add to site_map $ubh->url', $ubh->url, 7); // bugger
 
-            // FIXME: maybe should be moved to after results, in case it is changed due to redirect
             $this->site_map_set($this->page_pointer, $ubh->url, 'href', $a_href);
             
             if (! isset ($this->results[$ubh->url])) $this->crawl_queue[] = $ubh;
@@ -423,10 +427,8 @@ class LinkChecker
     {
     $follow = false;
 
-        if (
-            $this->page_countdown != 0 && 
+        if ($this->page_countdown != 0 && 
             $urlobj->same_host && 
-            // $hinfo['status'] == 200 &&
             $hinfo['status'] < 400 &&
             $this->is_type_html($hinfo['content_type']) && 
             $urlobj->depth <= $this->config['max_depth']
@@ -437,11 +439,39 @@ class LinkChecker
         if ($redir->host != $urlobj->host) $follow = false;
         if ($redir->scheme != $urlobj->scheme) $follow = false;
         if ($redir->port != $urlobj->port) $follow = false;
+        if (isset ($this->results[$redir->url])) $follow = false;
         }
         
         if ($this->jailed_subdir && strpos ($urlobj->path, $this->site_url->path) !== 0) $follow = false;
 
+        if ($follow)
+        {
+        $hinfo = $this->get_resource($urlobj, true, true);
+
+            if ($hinfo['redirect'])
+            {
+            $this->report_redirect($urlobj, $hinfo);
+            $redir_url = new UrlBuilder ($hinfo['redirect'], $urlobj);
+            if ($redir_url->host != $urlobj->host) $follow = false;
+            }
+
+        if ($follow) $follow = $hinfo;
+        }
+        
     return $follow;
+    }
+
+    /************************
+    *                       *
+    *   report_redirect()   *
+    *                       *
+    ************************/
+    private function report_redirect (&$urlobj, &$hinfo)
+    {
+    $this->redirects[$urlobj->url] = $hinfo['redirect'];
+    if ($this->config['warn_all_redirect'] ||
+        ($this->config['warn_redirect_to_other_host'] && $hinfo['redirect_other_host'])) // only if reported
+            $hinfo['status'] = $this->get_redirected_status($urlobj);
     }
 
     /*********************
@@ -451,14 +481,34 @@ class LinkChecker
     *********************/
     private function site_map_set ($page_url, $link_url = false, $k = false, $v = false)
     {
-        if (! isset ($this->site_map[$page_url])) 
-            $this->site_map[$page_url] = array ();
+    if (! isset ($this->site_map[$page_url])) $this->site_map[$page_url] = array ();
+    if ($link_url && ! isset ($this->site_map[$page_url][$link_url])) $this->site_map[$page_url][$link_url] = array ();
+    if ($link_url && $k) $this->site_map[$page_url][$link_url][$k] = $v;
+    }
 
-        if ($link_url && ! isset ($this->site_map[$page_url][$link_url])) 
-            $this->site_map[$page_url][$link_url] = array ();
+    /********************
+    *                   *
+    *   mk_site_map()   *
+    *                   *
+    ********************/
+    private function mk_site_map ()
+    {
+        foreach (array_keys ($this->site_map) as $k)
+        {
+            foreach (array_keys ($this->site_map[$k]) as $url)
+            {
+                if (isset ($this->site_map[$k][$url]) && 
+                    ! isset ($this->site_map[$k][$url]['status']) &&
+                    $this->report_test($this->results[$url], $url))
+                    $this->site_map[$k][$url]['status'] = $this->results[$url];
+                else
+                    unset ($this->site_map[$k][$url]);
+                
+                if (isset ($this->page_aliases[$url])) unset ($this->site_map[$k][$url]);
+            }
 
-        if ($link_url && $k) 
-            $this->site_map[$page_url][$link_url][$k] = $v;
+            if (isset ($this->page_aliases[$k]) || count ($this->site_map[$k]) == 0) unset ($this->site_map[$k]);
+        }
     }
 
     /*********************
@@ -466,7 +516,7 @@ class LinkChecker
     *   get_resource()   *
     *                    *
     *********************/
-    private function get_resource ($urlobj, $follow = true, $use_get = false)
+    private function get_resource (&$urlobj, $follow = true, $use_get = false)
     {
     $this->log_write(' get_resource()', $urlobj->url . ($use_get ? ' (GET)' : ''), 5); // bugger
     $tt = $this->get_throttle($urlobj->host, $urlobj->same_host);
@@ -492,7 +542,6 @@ class LinkChecker
         'Accept-Encoding:	gzip, deflate',
         'Accept-Language:	en-US,en;q=0.5',
     );
-    // 'User-Agent:	Mozilla/5.0 (X11; Linux x86_64; rv:23.0) Gecko/20100101 Firefox/23.0',
     if ($this->config['user_agent']) $headers[] = 'User-Agent:	' . $this->config['user_agent'];
 
     curl_setopt ($ch, CURLOPT_HTTPHEADER, $headers);
@@ -568,7 +617,7 @@ class LinkChecker
     *****************/
     private function throttle ($seconds) 
     {
-    $this->log_write(' throttle', $seconds, 6); // bugger
+    $this->log_write(' throttle', $seconds, 7); // bugger
     sleep ($seconds);
     $this->stats['throttle_time'] += $seconds;
     }
@@ -664,27 +713,6 @@ class LinkChecker
     $this->site_url = $ubh;
     }
 
-    /********************
-    *                   *
-    *   mk_site_map()   *
-    *                   *
-    ********************/
-    private function mk_site_map ()
-    {
-        foreach (array_keys ($this->site_map) as $k)
-        {
-            foreach (array_keys ($this->site_map[$k]) as $url)
-            {
-                if (isset ($this->site_map[$k][$url]) && ! isset ($this->site_map[$k][$url]['status']))
-                    $this->site_map[$k][$url]['status'] = $this->results[$url]['status'];
-
-                if (isset ($this->page_aliases[$url])) unset ($this->site_map[$k][$url]);
-            }
-
-            if (isset ($this->page_aliases[$k])) unset ($this->site_map[$k]);
-        }
-    }
-
     /**************************
     *                         *
     *   mk_bad_links_json()   *
@@ -702,11 +730,8 @@ class LinkChecker
             {
                 foreach (array_keys ($this->site_map[$k]) as $url)
                 {
-                    if ($this->report_test($this->site_map[$k][$url]['status'], $url))
-                    {
-                    if (! isset ($tmp[$k])) $tmp[$k] = array ();
-                    if (! isset ($tmp[$k][$url])) $tmp[$k][$url] = $this->site_map[$k][$url];
-                    }
+                if (! isset ($tmp[$k])) $tmp[$k] = array ();
+                if (! isset ($tmp[$k][$url])) $tmp[$k][$url] = $this->site_map[$k][$url];
                 }
             }
 
@@ -799,7 +824,7 @@ class LinkChecker
     *********************/
     private function is_translate ($url)
     {
-    $translate = in_array ($url, array_keys ($this->config['translate'])) ? true : false; // FIXME: regex maybe?
+    $translate = in_array ($url, array_keys ($this->config['translate'])) ? true : false; // regex maybe?
     if ($translate) $this->log_write('translated per config', $url, 4); // bugger
 
     return $translate;
@@ -865,7 +890,7 @@ class LinkChecker
     $out = '';
 
     if ($text = HttpCodes::get($code)) $out .= $code . ' ' . $text;
-    if (isset ($this->results[$url]['error']))  $out .= ' - ' . $this->results[$url]['error'];
+    if (isset ($this->errors[$url]))  $out .= ' - ' . $this->errors[$url];
 
     return $out;
     }
@@ -881,7 +906,7 @@ class LinkChecker
         {
             if (! isset ($this->page_aliases[$r]))
             {
-            if ($this->results[$r]['status'] > 399) $this->stats['bad_links']++;
+            if ($this->results[$r] > 399) $this->stats['bad_links']++;
             }
         }
 
@@ -960,8 +985,8 @@ class LinkChecker
 
         if ($code > 399) $report = 'error';
         else if ($this->config['warn_redirect_to_other_host'] && 
-                 isset ($this->results[$url]['error']) &&
-                 $this->str_starts ($this->results[$url]['error'], 'redirected to another host!'))
+                 isset ($this->errors[$url]) &&
+                 $this->str_starts ($this->errors[$url], 'redirected to another host!'))
                     $report = 'warn1';
         else if ($this->config['warn_all_redirect'] && $code > 299 && $code < 400) $report = 'warn2';
 
@@ -980,18 +1005,6 @@ class LinkChecker
     if ($this->config['report_html']) $fh = fopen ($this->config['report_html'], 'w');
     else $fh = STDOUT;
 
-        foreach (array_keys ($this->site_map) as $page)
-        {
-            foreach (array_keys ($this->site_map[$page]) as $url)
-            {
-                if ($this->report_test($this->site_map[$page][$url]['status'], $url))
-                {
-                $pages[] = $page;
-                break;
-                }
-            }
-        }
-
     fwrite ($fh, "<html>\n");
     fwrite ($fh, "<head>\n");
     fwrite ($fh, "<style> body { font-size: 12px; } h1, h2 { text-align: center; } </style>\n");
@@ -1001,9 +1014,9 @@ class LinkChecker
     fwrite ($fh, "<h1>Linkchecker Report for " . $this->site_url->url . "</h1>\n");
     fwrite ($fh, "<h2>generated on " . date ('Y-m-d') . "</h2>\n");
 
-        if (count ($pages) > 0)
+        if (count ($this->site_map) > 0)
         {
-            foreach ($pages as $page)
+            foreach (array_keys ($this->site_map) as $page)
             {
             fwrite ($fh, "<hr>\n");
             fwrite ($fh, "<h3>Page <a href=\"" . $page . "\" target=\"_blank\">" . $page . "</a></h3>\n");
@@ -1011,9 +1024,8 @@ class LinkChecker
 
                 foreach (array_keys ($this->site_map[$page]) as $url)
                 {
-                if ($this->report_test($this->site_map[$page][$url]['status'], $url))
-                    fwrite ($fh, "<li><a href=\"" . $url . "\" target=\"_blank\">" . $url . "</a> " . 
-                        $this->mk_pretty_status($url, $this->site_map[$page][$url]['status']) . "</li>\n");
+                fwrite ($fh, "<li><a href=\"" . $url . "\" target=\"_blank\">" . $url . "</a> " . 
+                    $this->mk_pretty_status($url, $this->site_map[$page][$url]['status']) . "</li>\n");
                 }
 
             fwrite ($fh, "</ul>\n");
