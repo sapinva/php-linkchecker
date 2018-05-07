@@ -30,7 +30,7 @@ class LinkChecker
 {
     public function __construct ($url = false)
     {
-    $this->VERSION = '0.9.3b';
+    $this->VERSION = '0.9.4b';
     $this->exe_start = microtime (true);
     $this->site_url = false;
     $this->config = array ();
@@ -1119,7 +1119,11 @@ class UrlBuilder
     else if ($this->str_starts(strtolower ($this->href), 'tel:')) return;
     else if ($this->str_starts($this->href, '#')) return;
 
-    $parts = parse_url (trim ($this->href));
+    // ugly php < 5.4.7 fix
+    $tmp_href = $this->str_starts($this->href, "//") ? 
+        (empty ($this->context->scheme) ? 'http' : $this->context->scheme) . ':' . $this->href : $this->href;
+    $parts = parse_url (trim ($tmp_href));
+
     $this->scheme = ! empty ($parts['scheme']) ? $parts['scheme'] : $this->find_scheme();
     $this->host = ! empty ($parts['host']) ? strtolower ($parts['host']) : false;
     $this->port = ! empty ($parts['port']) ? $parts['port'] : false;
