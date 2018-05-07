@@ -528,7 +528,7 @@ class LinkChecker
         'content_type' => false,
         'error' => false,
     );
-    $ch = curl_init ($urlobj->url);
+    $ch = curl_init (str_replace (' ', '%20', $urlobj->url));
     if ($follow) curl_setopt ($ch, CURLOPT_FOLLOWLOCATION, true);
 
     if ($use_get) curl_setopt ($ch, CURLOPT_RETURNTRANSFER, true);
