@@ -1,10 +1,10 @@
 # php-linkchecker
 
-no frills command line link checker designed to produce concise reports with few false positives
+command line link checker
 
 usage:
 
-  php linkchecker.php http://abc.com/ > report.html
+  php linkchecker.php http://abc.com/ > report.txt
 
   php linkchecker.php path/to/config
 
