@@ -30,7 +30,7 @@ class LinkChecker
 {
     public function __construct ($url = false)
     {
-    $this->VERSION = '0.9.4b';
+    $this->VERSION = '0.9.5b';
     $this->exe_start = microtime (true);
     $this->site_url = false;
     $this->config = array ();
@@ -53,10 +53,11 @@ class LinkChecker
         'memory' => 0,
     );
     $this->page_countdown = false;
-    $copts = getopt ('', array ('help', 'site-config'));
+    $this->copts = getopt ('', array ('help', 'site-config'));
+    $this->have_config = false;
 
-    if (isset ($copts['help'])) $this->mk_help();
-    else if (isset ($copts['site-config'])) $this->mk_config_template();
+    if (isset ($this->copts['help'])) $this->mk_help();
+    else if (isset ($this->copts['site-config'])) $this->mk_config_template();
     else if (strpos ($url, 'http') !== 0 && file_exists ($url)) $this->parse_config($url);
     else if (! empty ($url)) $this->quick_crawl($url);
     }
@@ -82,7 +83,7 @@ class LinkChecker
     print "\n";
     print "usage:" . "\n";
     print "\n";
-    print "  php linkchecker.php http://abc.com/ > report.html" . "\n";
+    print "  php linkchecker.php http://abc.com/ > report.txt" . "\n";
     print "\n";
     print "  php linkchecker.php path/to/config" . "\n";
     print "\n";
@@ -228,19 +229,25 @@ class LinkChecker
         'ignore_duplicate_content' => array (
             'def' => false,
             'type' => 'bool',
-            'txt' => 'ignore pages with content duplicated on other pages, caution is memory hog',
+            'txt' => 'ignore pages with content duplicated on other pages, uses more memory',
             'xmp' => '0',
         ),
         'report_html' => array (
             'def' => false,
             'type' => 'val',
-            'txt' => 'html report to file (instead of stdout)',
+            'txt' => 'write html report to file (default none)',
             'xmp' => "\"/path/to/report.html\"",
+        ),
+        'report_text' => array (
+            'def' => false,
+            'type' => 'val',
+            'txt' => 'write text report to file (instead of stdout)',
+            'xmp' => "\"/path/to/report.txt\"",
         ),
         'bad_links_report_json' => array (
             'def' => false,
             'type' => 'val',
-            'txt' => 'create a bad links json report file (default none)',
+            'txt' => 'write json report to file (default none)',
             'xmp' => "\"/path/to/report.json\"",
         ),
     );
@@ -276,28 +283,26 @@ class LinkChecker
 
         if ($this->config['log_file'] && $this->config['log_level'] > 0)
         {
-        $append = $this->config['truncate_log_file'] ? null : FILE_APPEND;
-        if (! file_put_contents ($this->config['log_file'], "\n", $append)) 
-            $this->fatal_error('log_file ' . $this->config['log_file'] . ' not writable!');
-        else $this->config['log_file_h'] = fopen ($this->config['log_file'], 'a');
+        $this->test_fh('log_file');
+        $mode = $this->config['truncate_log_file'] ? 'w' : 'a';
+        $this->config['log_file_h'] = fopen ($this->config['log_file'], $mode);
         }
 
-        if ($this->config['bad_links_report_json'])
-        {
-        if (! file_put_contents ($this->config['bad_links_report_json'], "\n", FILE_APPEND)) 
-            $this->fatal_error('bad_links_report_json ' . $this->config['bad_links_report_json'] . ' not writable!');
-        }
+        if ($this->config['bad_links_report_json']) $this->test_fh('bad_links_report_json');
 
-        if ($this->config['report_html'])
-        {
-        if (! file_put_contents ($this->config['report_html'], "\n", FILE_APPEND)) 
-            $this->fatal_error('report_html ' . $this->config['report_html'] . ' not writable!');
-        }
+        if ($this->config['report_html']) $this->test_fh('report_html');
+
+        if ($this->config['report_text']) $this->test_fh('report_text');
 
         if ($this->config['ignore_duplicate_content'])
         {
         $this->seen_hashes = array ();
         $this->page_aliases = array ();
+        }
+
+        foreach ($this->config['ignore_regex'] as $rx)
+        {
+        if (@preg_match ($rx, null) === false) $this->fatal_error('ignore_regex ' . $rx . ' invalid!');
         }
 
     $this->page_countdown = $this->config['max_pages'];
@@ -306,6 +311,20 @@ class LinkChecker
     $this->set_site_url($conf['site']);
 
     $this->log_write('$this->config', $this->config, 3); // bugger
+    }
+
+    /****************
+    *               *
+    *   test_fh()   *
+    *               *
+    ****************/
+    private function test_fh ($k)
+    {
+        if ($this->config[$k])
+        {
+        if (! @file_put_contents ($this->config[$k], "\n", FILE_APPEND)) 
+            $this->fatal_error($k . ' ' . $this->config[$k] . ' not writable!');
+        }
     }
 
     /**************
@@ -652,7 +671,7 @@ class LinkChecker
     private function fatal_error ($x)
     {
     $this->log_write('fatal_error', $x, 1);
-    fwrite (STDERR, $x . "\n");
+    fwrite (STDERR, 'fatal error: ' . $x . "\n");
     exit;
     }
 
@@ -664,6 +683,7 @@ class LinkChecker
     private function parse_config ($cf)
     {
     if (! file_exists ($cf)) $this->fatal_error('no config file ' . $cf . ' found');
+    $this->have_config = true;
     $cfh = file ($cf);
     $conf = array ();
 
@@ -1022,6 +1042,67 @@ class LinkChecker
     ******************/
     public function mk_report ()
     {
+    if ($this->config['report_text'] || ! $this->have_config) $this->mk_report_text();
+    if ($this->config['report_html']) $this->mk_report_html();
+    }
+
+    /***********************
+    *                      *
+    *   mk_report_text()   *
+    *                      *
+    ***********************/
+    public function mk_report_text ()
+    {
+    $pages = array ();
+    $fh = false;
+    if ($this->config['report_text']) $fh = fopen ($this->config['report_text'], 'w');
+    else $fh = STDOUT;
+
+    fwrite ($fh, 'Linkchecker Report for ' . $this->site_url->url . "\n\n");
+
+        if (count ($this->site_map) > 0)
+        {
+            foreach (array_keys ($this->site_map) as $page)
+            {
+            fwrite ($fh, 'Page ' . $page . "\n");
+
+                foreach (array_keys ($this->site_map[$page]) as $url)
+                {
+                fwrite ($fh, '  ' . $url . ' ' . 
+                    $this->mk_pretty_status($url, $this->site_map[$page][$url]['status']) . "\n");
+                }
+
+            fwrite ($fh, "\n");
+            }
+        }
+        else
+        {
+        fwrite ($fh, 'zero bad links :)' . "\n\n");
+        }
+
+    fwrite ($fh, "\n");
+
+    $this->mk_stats();
+    fwrite ($fh, 'pages: ' . number_format ($this->stats['pages']) . "\n");
+    fwrite ($fh, 'unique links: ' . number_format ($this->stats['links']) . "\n");
+    fwrite ($fh, 'examined links: ' . number_format ($this->stats['links_examined']) . "\n");
+    fwrite ($fh, 'bad links: ' . number_format ($this->stats['bad_links']) . "\n");
+    fwrite ($fh, 'redirected links: ' . number_format ($this->stats['redirected_links']) . "\n");
+    fwrite ($fh, 'memory: ' . number_format ($this->stats['memory']) . " bytes \n");
+    fwrite ($fh, 'run time: ' . $this->pretty_time($this->stats['run_time']) . " \n");
+    fwrite ($fh, 'execution time: ' . $this->pretty_time($this->stats['cpu_time']) . " \n");
+    fwrite ($fh, 'sleep time: ' . $this->pretty_time($this->stats['throttle_time']) . " \n");
+    fwrite ($fh, 'completed on: ' . date ('Y-m-d H:i:s e') . "\n");
+    if ($this->config['report_text']) fclose ($fh);
+    }
+
+    /***********************
+    *                      *
+    *   mk_report_html()   *
+    *                      *
+    ***********************/
+    public function mk_report_html ()
+    {
     $pages = array ();
     $fh = false;
     if ($this->config['report_html']) $fh = fopen ($this->config['report_html'], 'w');
@@ -1070,7 +1151,7 @@ class LinkChecker
     fwrite ($fh, 'run time: ' . $this->pretty_time($this->stats['run_time']) . " <br>\n");
     fwrite ($fh, 'execution time: ' . $this->pretty_time($this->stats['cpu_time']) . " <br>\n");
     fwrite ($fh, 'sleep time: ' . $this->pretty_time($this->stats['throttle_time']) . " <br>\n");
-    fwrite ($fh, 'completed on: ' . date ('Y-m-d H:i:s') . "<br><br>\n");
+    fwrite ($fh, 'completed on: ' . date ('Y-m-d H:i:s e') . "<br><br>\n");
     fwrite ($fh, "<a href=\"https://github.com/sapinva/php-linkchecker\" target=\"_blank\" rel=\"noreferrer\">" . 
             'php linkchecker v' . $this->VERSION . "</a>\n");
     fwrite ($fh, "</body>\n");
