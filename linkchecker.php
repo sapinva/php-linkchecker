@@ -34,8 +34,6 @@ class LinkChecker
     $this->exe_start = microtime (true);
     $this->site_url = false;
     $this->config = array ();
-    $this->crawl_queue = array ();
-    $this->page_pointer = false;
     $this->results = array ();
     $this->errors = array ();
     $this->site_map = array ();
@@ -317,7 +315,6 @@ class LinkChecker
     **************/
     public function crawl ()
     {
-    $this->page_pointer = $this->site_url->url;
     $this->_crawl($this->site_url);
     $this->mk_site_map();
     if ($this->config['bad_links_report_json']) $this->mk_bad_links_json();
@@ -329,6 +326,20 @@ class LinkChecker
     $this->log_write('$this->site_map', $this->site_map, 6);
 
     $this->mk_report();
+
+    $this->log_write('memory_get_usage', number_format (memory_get_usage ()), 6);
+
+    unset ($this->results);
+    gc_collect_cycles ();
+    $this->log_write('memory_get_usage (unset $this->results)', number_format (memory_get_usage ()), 6);
+
+    unset ($this->redirects);
+    gc_collect_cycles ();
+    $this->log_write('memory_get_usage (unset $this->redirects)', number_format (memory_get_usage ()), 6);
+
+    unset ($this->site_map);
+    gc_collect_cycles ();
+    $this->log_write('memory_get_usage (unset $this->site_map)', number_format (memory_get_usage ()), 6);
     }
 
     /******************************
@@ -353,6 +364,7 @@ class LinkChecker
     if (! $urlobj->url) return;
     $this->log_write('_crawl', $urlobj->url, 4); // bugger
     $this->stats['links']++;
+
     $hinfo = $this->get_resource($urlobj);
     $redir_url = false;
     if ($hinfo['status'] != 200 && isset ($this->config['retry_with_get'][$hinfo['status']])) // some servers don't like HEAD
@@ -366,14 +378,12 @@ class LinkChecker
 
     $this->results[$urlobj->url] = $hinfo['status'];
     if ($hinfo['error']) $this->errors[$urlobj->url] = $hinfo['error'];
+    if (fmod ($this->stats['links'], 100) == 0) $this->site_map_gc();
 
         if ($hinfo = $this->is_follow_page($urlobj, $hinfo, $redir_url))
         {
         $this->page_countdown--;
         $this->log_write(' get dom', $urlobj->url, 3); // bugger
-        $this->page_pointer = $urlobj->url;
-        $this->log_write('  page_pointer', $this->page_pointer, 4); // bugger
-
         $dom = new DOMDocument('1.0');
         $this->stats['pages']++;
         @$dom->loadHTML($hinfo['content']);
@@ -401,17 +411,10 @@ class LinkChecker
 
             $this->log_write('    add to site_map $ubh->url', $ubh->url, 7); // bugger
 
-            $this->site_map_set($this->page_pointer, $ubh->url, 'href', $a_href);
+            $this->site_map_set($urlobj->url, $ubh->url, 'href', $a_href);
             
-            if (! isset ($this->results[$ubh->url])) $this->crawl_queue[] = $ubh;
-            }
-                                
-            while (count ($this->crawl_queue) > 0)
-            {
-            $this->log_write('$this->crawl_queue', count ($this->crawl_queue), 8); // bugger
-            $target = array_shift ($this->crawl_queue);
-            if (! isset ($this->results[$target->url])) $this->_crawl($target);
-            else $this->log_write('  already seen: ', $target->url, 9); // bugger
+            if (! isset ($this->results[$ubh->url])) $this->_crawl($ubh);
+            else $this->log_write('  already seen: ', $ubh->url, 9); // bugger
             }
         }
 
@@ -488,6 +491,26 @@ class LinkChecker
 
     /********************
     *                   *
+    *   site_map_gc()   *
+    *                   *
+    ********************/
+    private function site_map_gc ()
+    {
+        foreach (array_keys ($this->site_map) as $k)
+        {
+            foreach (array_keys ($this->site_map[$k]) as $url)
+            {
+                if (isset ($this->results[$url]) && ! $this->report_test($this->results[$url], $url))
+                {
+                unset ($this->site_map[$k][$url]);
+                $this->log_write('site_map_gc() unset', $url . ' ' . $this->results[$url], 9); // bugger
+                }
+            }
+        }
+    }
+
+    /********************
+    *                   *
     *   mk_site_map()   *
     *                   *
     ********************/
@@ -497,8 +520,7 @@ class LinkChecker
         {
             foreach (array_keys ($this->site_map[$k]) as $url)
             {
-                if (isset ($this->site_map[$k][$url]) && 
-                    ! isset ($this->site_map[$k][$url]['status']) &&
+                if (! isset ($this->site_map[$k][$url]['status']) &&
                     $this->report_test($this->results[$url], $url))
                     $this->site_map[$k][$url]['status'] = $this->results[$url];
                 else
