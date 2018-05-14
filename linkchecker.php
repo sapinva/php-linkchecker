@@ -30,7 +30,7 @@ class LinkChecker
 {
     public function __construct ($url = false)
     {
-    $this->VERSION = '0.9.5b';
+    $this->VERSION = '0.9.6a';
     $this->exe_start = microtime (true);
     $this->site_url = false;
     $this->config = array ();
@@ -135,6 +135,12 @@ class LinkChecker
             'type' => false,
             'txt' => 'base url to check, the only required setting',
             'xmp' => "\"https://abc.com/\"",
+        ),
+        'site_additional' => array (
+            'def' => array (),
+            'type' => 'list',
+            'txt' => 'other url\'s to check that may not be accessible from the base url, repeat for each',
+            'xmp' => "\"https://abc.com/unlinked-page\"",
         ),
         'log_file' => array (
             'def' => false,
@@ -335,6 +341,9 @@ class LinkChecker
     public function crawl ()
     {
     $this->_crawl($this->site_url);
+    foreach ($this->config['site_additional'] as $a) $this->_crawl(
+        new UrlBuilder ($a, $this->site_url, array ('strip_fragment' => true,))
+    );
     $this->mk_site_map();
     if ($this->config['bad_links_report_json']) $this->mk_bad_links_json();
 
@@ -1042,6 +1051,7 @@ class LinkChecker
     ******************/
     public function mk_report ()
     {
+    $this->mk_stats();
     if ($this->config['report_text'] || ! $this->have_config) $this->mk_report_text();
     if ($this->config['report_html']) $this->mk_report_html();
     }
@@ -1082,7 +1092,7 @@ class LinkChecker
 
     fwrite ($fh, "\n");
 
-    $this->mk_stats();
+    //$this->mk_stats();
     fwrite ($fh, 'pages: ' . number_format ($this->stats['pages']) . "\n");
     fwrite ($fh, 'unique links: ' . number_format ($this->stats['links']) . "\n");
     fwrite ($fh, 'examined links: ' . number_format ($this->stats['links_examined']) . "\n");
@@ -1141,7 +1151,7 @@ class LinkChecker
 
     fwrite ($fh, "<hr>\n");
 
-    $this->mk_stats();
+    //$this->mk_stats();
     fwrite ($fh, 'pages: ' . number_format ($this->stats['pages']) . "<br>\n");
     fwrite ($fh, 'unique links: ' . number_format ($this->stats['links']) . "<br>\n");
     fwrite ($fh, 'examined links: ' . number_format ($this->stats['links_examined']) . "<br>\n");
