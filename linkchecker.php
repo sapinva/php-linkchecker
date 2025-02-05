@@ -28,6 +28,23 @@ date_default_timezone_set (@date_default_timezone_get ());
 ******************/
 class LinkChecker
 {
+    private $VERSION;
+    private $exe_start;
+    private $site_url;
+    private $config;
+    private $results;
+    private $errors;
+    private $site_map;
+    private $redirects;
+    private $seen_hashes;
+    private $page_aliases;
+    private $host_cache;
+    private $stats;
+    private $page_countdown;
+    private $copts;
+    private $have_config;
+    private $jailed_subdir;
+
     public function __construct ($url = false)
     {
     $this->VERSION = '0.9.6a';
@@ -340,34 +357,35 @@ class LinkChecker
     **************/
     public function crawl ()
     {
-    $this->_crawl($this->site_url);
-    foreach ($this->config['site_additional'] as $a) $this->_crawl(
-        new UrlBuilder ($a, $this->site_url, array ('strip_fragment' => true,))
-    );
-    $this->mk_site_map();
-    if ($this->config['bad_links_report_json']) $this->mk_bad_links_json();
+        $this->_crawl($this->site_url);
+        foreach ($this->config['site_additional'] as $a) {
+            $this->_crawl(new UrlBuilder($a, $this->site_url, array('strip_fragment' => true,)));
+        }
+        $this->mk_site_map();
+        if ($this->config['bad_links_report_json']) {
+            $this->mk_bad_links_json();
+        }
 
-    $this->log_write('$this->results', $this->results, 6);
-    $this->log_write('$this->redirects', $this->redirects, 6);
-    if ($this->config['ignore_duplicate_content']) $this->log_write('$this->seen_hashes', $this->seen_hashes, 6);
-    if ($this->config['ignore_duplicate_content']) $this->log_write('$this->page_aliases', $this->page_aliases, 6);
-    $this->log_write('$this->site_map', $this->site_map, 6);
+        $this->log_write('$this->results', $this->results, 6);
+        $this->log_write('$this->redirects', $this->redirects, 6);
+        if ($this->config['ignore_duplicate_content']) {
+            $this->log_write('$this->seen_hashes', $this->seen_hashes, 6);
+            $this->log_write('$this->page_aliases', $this->page_aliases, 6);
+        }
+        $this->log_write('$this->site_map', $this->site_map, 6);
 
-    $this->mk_report();
+        $this->mk_report();
 
-    $this->log_write('memory_get_usage', number_format (memory_get_usage ()), 6);
+        $this->log_memory_usage('memory_get_usage');
 
-    unset ($this->results);
-    gc_collect_cycles ();
-    $this->log_write('memory_get_usage (unset $this->results)', number_format (memory_get_usage ()), 6);
+        unset($this->results, $this->redirects, $this->site_map);
+        gc_collect_cycles();
+        $this->log_memory_usage('memory_get_usage (after unset)');
+    }
 
-    unset ($this->redirects);
-    gc_collect_cycles ();
-    $this->log_write('memory_get_usage (unset $this->redirects)', number_format (memory_get_usage ()), 6);
-
-    unset ($this->site_map);
-    gc_collect_cycles ();
-    $this->log_write('memory_get_usage (unset $this->site_map)', number_format (memory_get_usage ()), 6);
+    private function log_memory_usage($label)
+    {
+        $this->log_write($label, number_format(memory_get_usage()), 6);
     }
 
     /******************************
@@ -389,8 +407,8 @@ class LinkChecker
     ***************/
     private function _crawl (&$urlobj)
     {
-    if (! $urlobj->url) return;
-    $this->log_write('_crawl', $urlobj->url, 4); // bugger
+    if (! $urlobj->getUrl()) return;
+    $this->log_write('_crawl', $urlobj->getUrl(), 4); // bugger
     $this->stats['links']++;
 
     $hinfo = $this->get_resource($urlobj);
@@ -404,14 +422,14 @@ class LinkChecker
         $this->report_redirect($urlobj, $hinfo);
         }
 
-    $this->results[$urlobj->url] = $hinfo['status'];
-    if ($hinfo['error']) $this->errors[$urlobj->url] = $hinfo['error'];
+    $this->results[$urlobj->getUrl()] = $hinfo['status'];
+    if ($hinfo['error']) $this->errors[$urlobj->getUrl()] = $hinfo['error'];
     if (fmod ($this->stats['links'], 100) == 0) $this->site_map_gc();
 
         if ($hinfo = $this->is_follow_page($urlobj, $hinfo, $redir_url))
         {
         $this->page_countdown--;
-        $this->log_write(' get dom', $urlobj->url, 3); // bugger
+        $this->log_write(' get dom', $urlobj->getUrl(), 3); // bugger
         $dom = new DOMDocument('1.0');
         $this->stats['pages']++;
         @$dom->loadHTML($hinfo['content']);
@@ -419,8 +437,8 @@ class LinkChecker
             if ($this->config['ignore_duplicate_content'])
             {
             $sig = md5 ($hinfo['content']);
-            if (! isset ($this->seen_hashes[$sig])) $this->seen_hashes[$sig] = $urlobj->url;
-            else return $this->is_alias($sig, $urlobj->url);
+            if (! isset ($this->seen_hashes[$sig])) $this->seen_hashes[$sig] = $urlobj->getUrl();
+            else return $this->is_alias($sig, $urlobj->getUrl());
             }
             
         $anchors = $dom->getElementsByTagName('a');
@@ -431,18 +449,18 @@ class LinkChecker
             $this->stats['links_examined']++;
             $this->log_write('  each $a_href', $a_href, 7); // bugger
             $ubh = new UrlBuilder ($a_href, $urlobj, array ('strip_fragment' => true,));
-            $this->log_write('   UrlBuilder() $a_href', $ubh->url, 8); // bugger
+            $this->log_write('   UrlBuilder() $a_href', $ubh->getUrl(), 8); // bugger
 
-            if (! $ubh->url) continue;
-            if ($this->is_ignore($ubh->url) || $this->is_ignore_regex($ubh->url)) continue;
-            if ($this->is_translate($ubh->url)) $ubh->url = $this->config['translate'][$ubh->url];
+            if (! $ubh->getUrl()) continue;
+            if ($this->is_ignore($ubh->getUrl()) || $this->is_ignore_regex($ubh->getUrl())) continue;
+            if ($this->is_translate($ubh->getUrl())) $ubh->url = $this->config['translate'][$ubh->getUrl()];
 
-            $this->log_write('    add to site_map $ubh->url', $ubh->url, 7); // bugger
+            $this->log_write('    add to site_map $ubh->url', $ubh->getUrl(), 7); // bugger
 
-            $this->site_map_set($urlobj->url, $ubh->url, 'href', $a_href);
+            $this->site_map_set($urlobj->getUrl(), $ubh->getUrl(), 'href', $a_href);
             
-            if (! isset ($this->results[$ubh->url])) $this->_crawl($ubh);
-            else $this->log_write('  already seen: ', $ubh->url, 9); // bugger
+            if (! isset ($this->results[$ubh->getUrl()])) $this->_crawl($ubh);
+            else $this->log_write('  already seen: ', $ubh->getUrl(), 9); // bugger
             }
         }
 
@@ -459,21 +477,21 @@ class LinkChecker
     $follow = false;
 
         if ($this->page_countdown != 0 && 
-            $urlobj->same_host && 
+            $urlobj->getSameHost() && 
             $hinfo['status'] < 400 &&
             $this->is_type_html($hinfo['content_type']) && 
-            $urlobj->depth <= $this->config['max_depth']
+            $urlobj->getDepth() <= $this->config['max_depth']
             ) $follow = true;
 
         if ($redir)
         {
-        if ($redir->host != $urlobj->host) $follow = false;
-        if ($redir->scheme != $urlobj->scheme) $follow = false;
-        if ($redir->port != $urlobj->port) $follow = false;
-        if (isset ($this->results[$redir->url])) $follow = false;
+        if ($redir->getHost() != $urlobj->getHost()) $follow = false;
+        if ($redir->getScheme() != $urlobj->getScheme()) $follow = false;
+        if ($redir->getPort() != $urlobj->getPort()) $follow = false;
+        if (isset ($this->results[$redir->getUrl()])) $follow = false;
         }
         
-        if ($this->jailed_subdir && strpos ($urlobj->path, $this->site_url->path) !== 0) $follow = false;
+        if ($this->jailed_subdir && strpos ($urlobj->getPath(), $this->site_url->getPath()) !== 0) $follow = false;
 
         if ($follow)
         {
@@ -483,7 +501,7 @@ class LinkChecker
             {
             $this->report_redirect($urlobj, $hinfo);
             $redir_url = new UrlBuilder ($hinfo['redirect'], $urlobj);
-            if ($redir_url->host != $urlobj->host) $follow = false;
+            if ($redir_url->host != $urlobj->getHost()) $follow = false;
             }
 
         if ($follow) $follow = $hinfo;
@@ -499,7 +517,7 @@ class LinkChecker
     ************************/
     private function report_redirect (&$urlobj, &$hinfo)
     {
-    $this->redirects[$urlobj->url] = $hinfo['redirect'];
+    $this->redirects[$urlobj->getUrl()] = $hinfo['redirect'];
     if ($this->config['warn_all_redirect'] ||
         ($this->config['warn_redirect_to_other_host'] && $hinfo['redirect_other_host'])) // only if reported
             $hinfo['status'] = $this->get_redirected_status($urlobj);
@@ -568,8 +586,8 @@ class LinkChecker
     *********************/
     private function get_resource (&$urlobj, $follow = true, $use_get = false)
     {
-    $this->log_write(' get_resource()', $urlobj->url . ($use_get ? ' (GET)' : ''), 5); // bugger
-    $tt = $this->get_throttle($urlobj->host, $urlobj->same_host);
+    $this->log_write(' get_resource()', $urlobj->getUrl() . ($use_get ? ' (GET)' : ''), 5); // bugger
+    $tt = $this->get_throttle($urlobj->getHost(), $urlobj->getSameHost());
     $this->throttle($tt);
     $res = array (
         'status' => 1,
@@ -578,7 +596,7 @@ class LinkChecker
         'content_type' => false,
         'error' => false,
     );
-    $ch = curl_init (str_replace (' ', '%20', $urlobj->url));
+    $ch = curl_init (str_replace (' ', '%20', $urlobj->getUrl()));
     if ($follow) curl_setopt ($ch, CURLOPT_FOLLOWLOCATION, true);
 
     if ($use_get) curl_setopt ($ch, CURLOPT_RETURNTRANSFER, true);
@@ -638,7 +656,7 @@ class LinkChecker
     {
     $ubh = new UrlBuilder ($url, $context);
 
-    return $ubh->same_host ? true : false;
+    return $ubh->getSameHost() ? true : false;
     }
 
     /*********************
@@ -749,18 +767,18 @@ class LinkChecker
     $this->log_write(date ('Y-m-d H:i:s'), 'starting check of ' . $url, 1);
 
     $ubh = new UrlBuilder ($url);
-    if (! $ubh->url) $this->fatal_error('url is required');
-    $host = $ubh->host;
+    if (! $ubh->getUrl()) $this->fatal_error('url is required');
+    $host = $ubh->getHost();
     $test = $this->get_resource($ubh); // test it first: rewrite if base url gets redirected
 
         if ($test['redirect'])
         {
         $this->log_write('base url ' . $url . ' was redirected, resetting', $test['redirect'], 1); // bugger
         $ubh = new UrlBuilder ($test['redirect']);
-        if ($host != $ubh->host) $this->fatal_error('base url redirects to another host: ' . $ubh->host);
+        if ($host != $ubh->getHost()) $this->fatal_error('base url redirects to another host: ' . $ubh->getHost());
         }
         
-    $this->jailed_subdir = strlen ($ubh->path) > 2 ? true : false;
+    $this->jailed_subdir = strlen ($ubh->getPath()) > 2 ? true : false;
     $this->site_url = $ubh;
     }
 
@@ -1068,7 +1086,7 @@ class LinkChecker
     if ($this->config['report_text']) $fh = fopen ($this->config['report_text'], 'w');
     else $fh = STDOUT;
 
-    fwrite ($fh, 'Linkchecker Report for ' . $this->site_url->url . "\n\n");
+    fwrite ($fh, 'Linkchecker Report for ' . $this->site_url->getUrl() . "\n\n");
 
         if (count ($this->site_map) > 0)
         {
@@ -1177,6 +1195,55 @@ class LinkChecker
 *****************/
 class UrlBuilder
 {
+    private $href;    
+    private $context;
+    private $scheme;    
+    private $host;
+    private $port;
+    private $path;    
+    private $dir_path;
+    private $query;
+    private $fragment;
+    private $depth;    
+    private $same_host;    
+    private $url;
+    private $strip_fragment;
+    private $strip_query;
+
+    public function getScheme() {
+        return $this->scheme;
+    }
+    
+    public function getHost() {
+        return $this->host;
+    }
+
+    public function getPort() {
+        return $this->port;
+    }
+
+    public function getPath() {
+        return $this->path;
+    }
+
+    public function getDepth() {
+        return $this->depth;
+    }
+
+    public function getDirPath() {
+        return $this->dir_path;
+    }
+    
+    public function getSameHost() {
+        return $this->same_host;
+    }
+    
+    public function getUrl() {
+        return $this->url;
+    }
+    
+    
+    
     public function __construct ($href, $context = false, $opts = false)
     {
     $this->href = $href;
