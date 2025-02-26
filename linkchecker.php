@@ -30,7 +30,7 @@ class LinkChecker
 {
     public function __construct ($url = false)
     {
-    $this->VERSION = '0.9.6a';
+    $this->VERSION = '1.0';
     $this->exe_start = microtime (true);
     $this->site_url = false;
     $this->config = array ();
@@ -55,6 +55,8 @@ class LinkChecker
     $this->page_countdown = false;
     $this->copts = getopt ('', array ('help', 'site-config'));
     $this->have_config = false;
+    $this->min_throttle = 3;
+    $this->min_ext_throttle = 10;
 
     if (isset ($this->copts['help'])) $this->mk_help();
     else if (isset ($this->copts['site-config'])) $this->mk_config_template();
@@ -87,7 +89,7 @@ class LinkChecker
     print "\n";
     print "  php linkchecker.php path/to/config" . "\n";
     print "\n";
-    print "  php linkchecker.php [options...]" . "\n";
+    print "  php linkchecker.php [options]" . "\n";
     print "\n";
     print "    --help" . "\n";
     print "      you're reading it" . "\n";
@@ -256,6 +258,24 @@ class LinkChecker
             'txt' => 'write json report to file (default none)',
             'xmp' => "\"/path/to/report.json\"",
         ),
+        'site_inventory_json' => array (
+            'def' => false,
+            'type' => 'val',
+            'txt' => 'write json report to file (default none)',
+            'xmp' => "\"/path/to/report.json\"",
+        ),
+        'same_host_only' => array (
+            'def' => false,
+            'type' => 'bool',
+            'txt' => 'only follow same host urls',
+            'xmp' => '0',
+        ),
+        'http_auth' => array (
+            'def' => false,
+            'type' => 'val',
+            'txt' => 'http auth credentials in form "user:pass"',
+            'xmp' => '0',
+        ),
     );
     }
 
@@ -312,8 +332,10 @@ class LinkChecker
         }
 
     $this->page_countdown = $this->config['max_pages'];
-    if ($this->config['site_throttle'] < 3) $this->config['site_throttle'] = 3;
-    if ($this->config['ext_site_throttle'] < 10) $this->config['ext_site_throttle'] = 10;
+    if ($this->config['site_throttle'] < $this->min_throttle) 
+        $this->config['site_throttle'] = $this->min_throttle;
+    if ($this->config['ext_site_throttle'] < $this->min_ext_throttle) 
+        $this->config['ext_site_throttle'] = $this->min_ext_throttle;
     $this->set_site_url($conf['site']);
 
     $this->log_write('$this->config', $this->config, 3); // bugger
@@ -346,6 +368,7 @@ class LinkChecker
     );
     $this->mk_site_map();
     if ($this->config['bad_links_report_json']) $this->mk_bad_links_json();
+    if ($this->config['site_inventory_json']) $this->mk_site_inventory_json();
 
     $this->log_write('$this->results', $this->results, 6);
     $this->log_write('$this->redirects', $this->redirects, 6);
@@ -404,7 +427,11 @@ class LinkChecker
         $this->report_redirect($urlobj, $hinfo);
         }
 
-    $this->results[$urlobj->url] = $hinfo['status'];
+    $this->results[$urlobj->url] = array (
+        'status' => $hinfo['status'],
+        'type' => $hinfo['content_type'],
+        'links' => array (),
+    );
     if ($hinfo['error']) $this->errors[$urlobj->url] = $hinfo['error'];
     if (fmod ($this->stats['links'], 100) == 0) $this->site_map_gc();
 
@@ -413,7 +440,19 @@ class LinkChecker
         $this->page_countdown--;
         $this->log_write(' get dom', $urlobj->url, 3); // bugger
         $dom = new DOMDocument('1.0');
+        if (! $dom) $this->log_write(' failed to parse dom', $urlobj->url, 1); // bugger
         $this->stats['pages']++;
+
+        /*
+        $hinfo['content'] = preg_replace ('/[\x00-\x1F]/', '', $hinfo['content']);
+        $tidy = new tidy ();
+        $this->log_write('  html content', $hinfo['content'], 7); // bugger
+        $hinfo['content'] = $tidy->repairString(
+            $hinfo['content'], 
+            array ('escape-cdata' => true, 'clean' => true, 'output-xml' => true, )
+        );
+        */
+
         @$dom->loadHTML($hinfo['content']);
 
             if ($this->config['ignore_duplicate_content'])
@@ -434,10 +473,14 @@ class LinkChecker
             $this->log_write('   UrlBuilder() $a_href', $ubh->url, 8); // bugger
 
             if (! $ubh->url) continue;
+            if ($this->config['same_host_only'] && ! $ubh->same_host) continue;
             if ($this->is_ignore($ubh->url) || $this->is_ignore_regex($ubh->url)) continue;
             if ($this->is_translate($ubh->url)) $ubh->url = $this->config['translate'][$ubh->url];
 
             $this->log_write('    add to site_map $ubh->url', $ubh->url, 7); // bugger
+
+            if (! in_array ($ubh->url, $this->results[$urlobj->url]['links'])) 
+                $this->results[$urlobj->url]['links'][] = $ubh->url;
 
             $this->site_map_set($urlobj->url, $ubh->url, 'href', $a_href);
             
@@ -528,10 +571,10 @@ class LinkChecker
         {
             foreach (array_keys ($this->site_map[$k]) as $url)
             {
-                if (isset ($this->results[$url]) && ! $this->report_test($this->results[$url], $url))
+                if (isset ($this->results[$url]) && ! $this->report_test($this->results[$url]['status'], $url))
                 {
                 unset ($this->site_map[$k][$url]);
-                $this->log_write('site_map_gc() unset', $url . ' ' . $this->results[$url], 9); // bugger
+                $this->log_write('site_map_gc() unset', $url . ' ' . $this->results[$url]['status'], 9); // bugger
                 }
             }
         }
@@ -549,8 +592,8 @@ class LinkChecker
             foreach (array_keys ($this->site_map[$k]) as $url)
             {
                 if (! isset ($this->site_map[$k][$url]['status']) &&
-                    $this->report_test($this->results[$url], $url))
-                    $this->site_map[$k][$url]['status'] = $this->results[$url];
+                    $this->report_test($this->results[$url]['status'], $url))
+                    $this->site_map[$k][$url]['status'] = $this->results[$url]['status'];
                 else
                     unset ($this->site_map[$k][$url]);
                 
@@ -584,6 +627,8 @@ class LinkChecker
     if ($use_get) curl_setopt ($ch, CURLOPT_RETURNTRANSFER, true);
     else curl_setopt ($ch, CURLOPT_NOBODY, true);
 
+    if ($this->config['http_auth']) curl_setopt ($ch, CURLOPT_USERPWD, $this->config['http_auth']);
+    
     if (! $this->config['strict_ssl_checking']) curl_setopt ($ch, CURLOPT_SSL_VERIFYHOST, false);
     if (! $this->config['strict_ssl_checking']) curl_setopt ($ch, CURLOPT_SSL_VERIFYPEER, false);
         
@@ -594,6 +639,7 @@ class LinkChecker
     );
     if ($this->config['user_agent']) $headers[] = 'User-Agent:	' . $this->config['user_agent'];
 
+    curl_setopt ($ch, CURLOPT_ENCODING , ''); // so it will handle gzip
     curl_setopt ($ch, CURLOPT_HTTPHEADER, $headers);
 
     curl_setopt ($ch, CURLOPT_TIMEOUT, $this->config['request_timeout']);
@@ -604,7 +650,8 @@ class LinkChecker
     curl_close ($ch);
     $this->log_write('curl_getinfo', $info, 8); // bugger
     $res['status'] = $info['http_code'];
-    $res['content_type'] = $info['content_type'];
+    $ct_tmp = preg_split ('|;\s*|', $info['content_type']);
+    $res['content_type'] = $ct_tmp[0];
     if ($err != '') $res['error'] = $err;
     if ($use_get) $res['content'] = $retdata;
 
@@ -792,6 +839,23 @@ class LinkChecker
         }
     }
 
+    /*******************************
+    *                              *
+    *   mk_site_inventory_json()   *
+    *                              *
+    *******************************/
+    private function mk_site_inventory_json ()
+    {
+    $fh = fopen ($this->config['site_inventory_json'], 'w');
+
+        if ($fh)
+        {
+        if (defined ('JSON_PRETTY_PRINT')) fwrite ($fh, json_encode ($this->results, JSON_PRETTY_PRINT));
+        else fwrite ($fh, json_encode ($this->results));
+        fclose ($fh);
+        }
+    }
+
     /***********************
     *                      *
     *   config_mk_list()   *
@@ -957,7 +1021,7 @@ class LinkChecker
         {
             if (! isset ($this->page_aliases[$r]))
             {
-            if ($this->results[$r] > 399) $this->stats['bad_links']++;
+            if ($this->results[$r]['status'] > 399) $this->stats['bad_links']++;
             }
         }
 
@@ -1092,7 +1156,6 @@ class LinkChecker
 
     fwrite ($fh, "\n");
 
-    //$this->mk_stats();
     fwrite ($fh, 'pages: ' . number_format ($this->stats['pages']) . "\n");
     fwrite ($fh, 'unique links: ' . number_format ($this->stats['links']) . "\n");
     fwrite ($fh, 'examined links: ' . number_format ($this->stats['links_examined']) . "\n");
@@ -1151,7 +1214,6 @@ class LinkChecker
 
     fwrite ($fh, "<hr>\n");
 
-    //$this->mk_stats();
     fwrite ($fh, 'pages: ' . number_format ($this->stats['pages']) . "<br>\n");
     fwrite ($fh, 'unique links: ' . number_format ($this->stats['links']) . "<br>\n");
     fwrite ($fh, 'examined links: ' . number_format ($this->stats['links_examined']) . "<br>\n");
