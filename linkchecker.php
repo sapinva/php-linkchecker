@@ -19,6 +19,7 @@
  * 
  */
 
+// error_reporting (E_ALL & ~E_NOTICE);
 date_default_timezone_set (@date_default_timezone_get ());
 
 /******************
@@ -28,6 +29,25 @@ date_default_timezone_set (@date_default_timezone_get ());
 ******************/
 class LinkChecker
 {
+public $VERSION;
+public $exe_start;
+public $site_url;
+public $config;
+public $results;
+public $errors;
+public $site_map;
+public $redirects;
+public $seen_hashes;
+public $page_aliases;
+public $host_cache;
+public $stats;
+public $page_countdown;
+public $copts;
+public $have_config;
+public $min_throttle;
+public $min_ext_throttle;
+public $jailed_subdir;
+
     public function __construct ($url = false)
     {
     $this->VERSION = '1.0';
@@ -1239,6 +1259,21 @@ class LinkChecker
 *****************/
 class UrlBuilder
 {
+public $href;
+public $context;
+public $scheme;
+public $host;
+public $port;
+public $path;
+public $dir_path;
+public $query;
+public $fragment;
+public $depth;
+public $same_host;
+public $url;
+public $strip_fragment;
+public $strip_query;
+
     public function __construct ($href, $context = false, $opts = false)
     {
     $this->href = $href;
